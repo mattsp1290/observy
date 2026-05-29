@@ -172,3 +172,55 @@ suite "BatchProcessor — lifecycle guards and error isolation":
     discard drainSizes()
     sizeChan.close()
     check true
+
+suite "BatchProcessor — forceFlush and shutdown":
+  test "shutdown exports all enqueued items before returning":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 100, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(recordBatch)
+    for i in 0 ..< 10:
+      p.submit(Item(id: i, name: ""))
+    p.shutdown()             # blocks until drained + flushed
+    let sizes = drainSizes() # all sends already completed before shutdown returned
+    sizeChan.close()
+    check sum(sizes) == 10   # every item exported
+
+  test "forceFlush flushes pending items synchronously, worker keeps running":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 1000, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(recordBatch)
+    for i in 0 ..< 5:
+      p.submit(Item(id: i, name: ""))
+    p.forceFlush()           # blocks until the 5 are flushed
+    let afterFirst = drainSizes()
+    check sum(afterFirst) == 5
+    # processor still running: submit more, forceFlush again
+    for i in 0 ..< 3:
+      p.submit(Item(id: i, name: ""))
+    p.forceFlush()
+    let afterSecond = drainSizes()
+    p.shutdown()
+    sizeChan.close()
+    check sum(afterSecond) == 3
+
+  test "forceFlush with no pending items is a no-op (acks, no batch)":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.forceFlush()           # must not block forever; no onBatch call
+    let sizes = drainSizes()
+    p.shutdown()
+    sizeChan.close()
+    check sizes.len == 0
+
+  test "forceFlush after shutdown raises":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.shutdown()
+    expect ValueError:
+      p.forceFlush()
+    discard drainSizes()
+    sizeChan.close()
