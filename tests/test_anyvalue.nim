@@ -1,5 +1,7 @@
 import unittest
+import std/math
 import ../src/observy/anyvalue
+import ../src/observy/proto
 
 suite "AnyValue kinds":
   test "avString":
@@ -172,3 +174,91 @@ suite "recursive truncation":
     ])
     a.add("k", v)
     check a.pairs[0].value.arrayVal[0].intVal == 12345'i64
+
+suite "AnyValue edge values":
+  test "empty string":
+    let v = AnyValue(kind: avString, strVal: "")
+    check v.strVal == ""
+    check v.strVal.len == 0
+
+  test "empty bytes":
+    let v = AnyValue(kind: avBytes, bytesVal: @[])
+    check v.bytesVal.len == 0
+
+  test "zero int64":
+    let v = AnyValue(kind: avInt, intVal: 0'i64)
+    check v.intVal == 0'i64
+
+  test "negative one int64":
+    let v = AnyValue(kind: avInt, intVal: -1'i64)
+    check v.intVal == -1'i64
+
+  test "min int64":
+    let v = AnyValue(kind: avInt, intVal: low(int64))
+    check v.intVal == low(int64)
+
+  test "max int64":
+    let v = AnyValue(kind: avInt, intVal: high(int64))
+    check v.intVal == high(int64)
+
+  test "NaN double":
+    let v = AnyValue(kind: avDouble, dblVal: NaN)
+    check isNaN(v.dblVal)
+
+  test "max float64":
+    let v = AnyValue(kind: avDouble, dblVal: high(float64))
+    check v.dblVal == high(float64)
+
+  test "positive infinity":
+    let v = AnyValue(kind: avDouble, dblVal: Inf)
+    check classify(v.dblVal) == fcInf
+
+suite "KeyValue proto round-trip":
+  proc encodeKV(kv: KeyValue): seq[byte] =
+    var w: ProtoWriter
+    w.writeString(1, kv.key)
+    var valW: ProtoWriter
+    case kv.value.kind
+    of avString: valW.writeString(1, kv.value.strVal)
+    of avBool:   valW.writeBool(2, kv.value.boolVal)
+    of avInt:    valW.writeInt64(3, kv.value.intVal)
+    of avDouble: valW.writeDouble(4, kv.value.dblVal)
+    of avBytes:  valW.writeBytes(7, kv.value.bytesVal)
+    else: discard
+    w.writeEmbedded(2, valW)
+    w.buf
+
+  test "string kv encodes key as field 1":
+    let kv = KeyValue(key: "service.name", value: AnyValue(kind: avString, strVal: "my-svc"))
+    let bytes = encodeKV(kv)
+    check bytes.len > 0
+    var found = false
+    for i in 0 ..< bytes.len - 12:
+      if bytes[i ..< i + 12] == cast[seq[byte]]("service.name"):
+        found = true; break
+    check found
+
+  test "int kv preserves value":
+    let kv = KeyValue(key: "count", value: AnyValue(kind: avInt, intVal: 42'i64))
+    let bytes = encodeKV(kv)
+    var r = ProtoReader(data: bytes)
+    # field 1 = key
+    discard r.readTag()
+    check r.readString() == "count"
+    # field 2 = value (embedded)
+    discard r.readTag()
+    let inner = r.readBytes()
+    var vr = ProtoReader(data: inner)
+    discard vr.readTag()  # field 3, varint
+    check vr.readInt64() == 42'i64
+
+  test "bool kv true":
+    let kv = KeyValue(key: "ok", value: AnyValue(kind: avBool, boolVal: true))
+    let bytes = encodeKV(kv)
+    check bytes.len > 0
+
+  test "empty key kv":
+    let kv = KeyValue(key: "", value: AnyValue(kind: avString, strVal: "val"))
+    let bytes = encodeKV(kv)
+    # empty key → field 1 omitted (proto3 default suppression)
+    check bytes.len > 0  # still has value field
