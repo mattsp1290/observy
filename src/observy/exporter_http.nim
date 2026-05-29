@@ -6,6 +6,8 @@
 # TLS (https endpoints) works automatically when compiled with -d:ssl (OpenSSL);
 # plaintext http needs no external dependencies. gRPC/HTTP2 is out of scope.
 import std/httpclient
+import std/httpcore
+export httpcore   ## HttpCode / Http200 etc. are part of ExportResponse's surface
 import std/json
 import std/strutils
 import ./config
