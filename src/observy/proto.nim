@@ -188,6 +188,14 @@ proc writePackedInt64*(w: var ProtoWriter; fieldNumber: uint32; vs: openArray[in
   w.writeVarint(uint64(tmp.buf.len))
   for b in tmp.buf: w.buf.add(b)
 
+proc writePackedUint32*(w: var ProtoWriter; fieldNumber: uint32; vs: openArray[uint32]) =
+  if vs.len == 0: return
+  var tmp: ProtoWriter
+  for v in vs: tmp.writeVarint(uint64(v))
+  w.writeTag(fieldNumber, WireLen)
+  w.writeVarint(uint64(tmp.buf.len))
+  for b in tmp.buf: w.buf.add(b)
+
 proc writePackedDouble*(w: var ProtoWriter; fieldNumber: uint32; vs: openArray[float64]) =
   if vs.len == 0: return
   var tmp: ProtoWriter
