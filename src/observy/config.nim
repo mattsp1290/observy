@@ -2,6 +2,7 @@
 import std/os
 import std/strutils
 import std/uri
+import ./metrics
 
 type
   OtlpProtocol* = enum
@@ -22,6 +23,10 @@ type
     compression*:         CompressionType
     timeoutMs*:           int               ## per-request HTTP timeout (ms); <=0 → exporter default
     maxRetryElapsed*:     int               ## max cumulative retry window in seconds
+    ## Optional aggregation temporality selector applied to outbound metrics.
+    ## nil → use whatever temporality is set on each Metric as-is.
+    ## Use alwaysCumulative() or alwaysDelta() from metrics.nim for standard policies.
+    temporalitySelector*: AggregationTemporalitySelector
 
   SignalIndex* = range[0 .. 3]              ## index into signalEndpoints (SigTraces..SigProfiles)
 

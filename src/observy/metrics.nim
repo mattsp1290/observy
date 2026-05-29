@@ -148,6 +148,41 @@ type
     of mkExpHistogram: expHistogram*: MetricExpHistogram
     of mkSummary:      summary*:      MetricSummary
 
+  # A selector proc that maps MetricKind → AggregationTemporality. Used by the
+  # exporter to override the temporality of outbound metrics. Only meaningful
+  # for mkSum, mkHistogram, and mkExpHistogram — must return aggTempUnspecified
+  # for mkGauge and mkSummary (those types have no aggregation temporality).
+  AggregationTemporalitySelector* = proc(kind: MetricKind): AggregationTemporality
+
+proc alwaysCumulative*(): AggregationTemporalitySelector =
+  ## Returns a selector that sets CUMULATIVE on Sum/Histogram/ExpHistogram and
+  ## UNSPECIFIED on Gauge/Summary (which have no meaningful temporality).
+  result = proc(kind: MetricKind): AggregationTemporality =
+    case kind
+    of mkSum, mkHistogram, mkExpHistogram: aggTempCumulative
+    of mkGauge, mkSummary:                 aggTempUnspecified
+
+proc alwaysDelta*(): AggregationTemporalitySelector =
+  ## Returns a selector that sets DELTA on Sum/Histogram/ExpHistogram and
+  ## UNSPECIFIED on Gauge/Summary (which have no meaningful temporality).
+  result = proc(kind: MetricKind): AggregationTemporality =
+    case kind
+    of mkSum, mkHistogram, mkExpHistogram: aggTempDelta
+    of mkGauge, mkSummary:                 aggTempUnspecified
+
+proc applyTemporalitySelector*(m: Metric;
+                                sel: AggregationTemporalitySelector): Metric =
+  ## Return a copy of `m` with aggregationTemporality overridden by `sel`.
+  ## Gauge and Summary are returned unchanged (selector must return UNSPECIFIED
+  ## for those, and the encoder ignores the field on those types anyway).
+  result = m
+  let t = sel(m.kind)
+  case m.kind
+  of mkSum:          result.sum.aggregationTemporality          = t
+  of mkHistogram:    result.histogram.aggregationTemporality    = t
+  of mkExpHistogram: result.expHistogram.aggregationTemporality = t
+  of mkGauge, mkSummary: discard
+
 # ---------------------------------------------------------------------------
 # Proto encoding
 #

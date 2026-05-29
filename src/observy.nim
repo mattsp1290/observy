@@ -163,12 +163,18 @@ proc record*(e: var OtlpHttpExporter; resource: Resource;
 proc record*(e: var OtlpHttpExporter; resource: Resource;
              scope: InstrumentationScope; metrics: seq[Metric]): ExportResponse =
   ## Synchronously encode + send metrics as one OTLP request. Single attempt;
-  ## partial-success surfaced via the warn hook on 2xx. See the spans overload.
-  ## (Aggregation-temporality selection — observy-3qq — will be applied here once
-  ## implemented; metrics are currently encoded with their data points as given.)
+  ## partial-success surfaced via the warn hook on 2xx. If e.config has a
+  ## temporalitySelector, it is applied to each metric before encoding.
+  let resolved =
+    if e.config.temporalitySelector != nil:
+      var r = newSeq[Metric](metrics.len)
+      for i, m in metrics: r[i] = applyTemporalitySelector(m, e.config.temporalitySelector)
+      r
+    else:
+      metrics
   let payload =
     case e.config.protocol
-    of otlpProtoHttp: protoEncodeMetricsRequest(resource, scope, metrics)
-    of otlpJsonHttp:  strToBytes(metricToJson(resource, scope, metrics))
+    of otlpProtoHttp: protoEncodeMetricsRequest(resource, scope, resolved)
+    of otlpJsonHttp:  strToBytes(metricToJson(resource, scope, resolved))
   result = e.sendSignal(SigMetrics, payload)
   e.handle2xx(result)

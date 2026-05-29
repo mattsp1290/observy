@@ -562,3 +562,70 @@ suite "Metrics JSON — exemplars and zero-scalar omission":
     let dp = j["exponentialHistogram"]["dataPoints"][0]
     check dp["negative"]["offset"].getInt() == -2
     check dp["negative"]["bucketCounts"][0].getStr() == "2"
+
+suite "Aggregation temporality selector":
+  test "alwaysDelta sets DELTA on Sum, Histogram, ExpHistogram":
+    let sel = alwaysDelta()
+    check sel(mkSum)          == aggTempDelta
+    check sel(mkHistogram)    == aggTempDelta
+    check sel(mkExpHistogram) == aggTempDelta
+
+  test "alwaysDelta returns UNSPECIFIED for Gauge and Summary":
+    let sel = alwaysDelta()
+    check sel(mkGauge)   == aggTempUnspecified
+    check sel(mkSummary) == aggTempUnspecified
+
+  test "alwaysCumulative sets CUMULATIVE on Sum, Histogram, ExpHistogram":
+    let sel = alwaysCumulative()
+    check sel(mkSum)          == aggTempCumulative
+    check sel(mkHistogram)    == aggTempCumulative
+    check sel(mkExpHistogram) == aggTempCumulative
+
+  test "alwaysCumulative returns UNSPECIFIED for Gauge and Summary":
+    let sel = alwaysCumulative()
+    check sel(mkGauge)   == aggTempUnspecified
+    check sel(mkSummary) == aggTempUnspecified
+
+  test "applyTemporalitySelector overrides Sum temporality":
+    let m = Metric(
+      name: "reqs",
+      kind: mkSum,
+      sum: MetricSum(
+        dataPoints: @[],
+        aggregationTemporality: aggTempCumulative,
+        isMonotonic: true,
+      ),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.sum.aggregationTemporality == aggTempDelta
+    check applied.sum.isMonotonic == true    # other fields unchanged
+
+  test "applyTemporalitySelector overrides Histogram temporality":
+    let m = Metric(
+      name: "latency",
+      kind: mkHistogram,
+      histogram: MetricHistogram(
+        dataPoints: @[],
+        aggregationTemporality: aggTempCumulative,
+      ),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.histogram.aggregationTemporality == aggTempDelta
+
+  test "applyTemporalitySelector leaves Gauge unchanged":
+    let m = Metric(
+      name: "cpu",
+      kind: mkGauge,
+      gauge: MetricGauge(dataPoints: @[]),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.kind == mkGauge    # unchanged
+
+  test "applyTemporalitySelector leaves Summary unchanged":
+    let m = Metric(
+      name: "rts",
+      kind: mkSummary,
+      summary: MetricSummary(dataPoints: @[]),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.kind == mkSummary  # unchanged
