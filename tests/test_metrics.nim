@@ -562,3 +562,155 @@ suite "Metrics JSON — exemplars and zero-scalar omission":
     let dp = j["exponentialHistogram"]["dataPoints"][0]
     check dp["negative"]["offset"].getInt() == -2
     check dp["negative"]["bucketCounts"][0].getStr() == "2"
+
+suite "Aggregation temporality selector":
+  test "alwaysDelta sets DELTA on Sum, Histogram, ExpHistogram":
+    let sel = alwaysDelta()
+    check sel(mkSum)          == aggTempDelta
+    check sel(mkHistogram)    == aggTempDelta
+    check sel(mkExpHistogram) == aggTempDelta
+
+  test "alwaysDelta returns UNSPECIFIED for Gauge and Summary":
+    let sel = alwaysDelta()
+    check sel(mkGauge)   == aggTempUnspecified
+    check sel(mkSummary) == aggTempUnspecified
+
+  test "alwaysCumulative sets CUMULATIVE on Sum, Histogram, ExpHistogram":
+    let sel = alwaysCumulative()
+    check sel(mkSum)          == aggTempCumulative
+    check sel(mkHistogram)    == aggTempCumulative
+    check sel(mkExpHistogram) == aggTempCumulative
+
+  test "alwaysCumulative returns UNSPECIFIED for Gauge and Summary":
+    let sel = alwaysCumulative()
+    check sel(mkGauge)   == aggTempUnspecified
+    check sel(mkSummary) == aggTempUnspecified
+
+  test "applyTemporalitySelector overrides Sum temporality":
+    let m = Metric(
+      name: "reqs",
+      kind: mkSum,
+      sum: MetricSum(
+        dataPoints: @[],
+        aggregationTemporality: aggTempCumulative,
+        isMonotonic: true,
+      ),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.sum.aggregationTemporality == aggTempDelta
+    check applied.sum.isMonotonic == true    # other fields unchanged
+
+  test "applyTemporalitySelector overrides Histogram temporality":
+    let m = Metric(
+      name: "latency",
+      kind: mkHistogram,
+      histogram: MetricHistogram(
+        dataPoints: @[],
+        aggregationTemporality: aggTempCumulative,
+      ),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.histogram.aggregationTemporality == aggTempDelta
+
+  test "applyTemporalitySelector leaves Gauge unchanged":
+    let m = Metric(
+      name: "cpu",
+      kind: mkGauge,
+      gauge: MetricGauge(dataPoints: @[]),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.kind == mkGauge    # unchanged
+
+  test "applyTemporalitySelector leaves Summary unchanged":
+    let m = Metric(
+      name: "rts",
+      kind: mkSummary,
+      summary: MetricSummary(dataPoints: @[]),
+    )
+    let applied = applyTemporalitySelector(m, alwaysDelta())
+    check applied.kind == mkSummary  # unchanged
+
+suite "Metrics attribute limits on NumberDataPoint":
+  test "NumberDataPoint AttributeSet drops and counts excess":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    check attrs.pairs.len == 128
+    check attrs.dropped == 2'u32
+
+  test "NumberDataPoint with overflow attrs encodes 128 attrs in proto":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let dp = NumberDataPoint(
+      attributes: attrs,
+      timeUnixNano: 1'u64,
+      kind: ndpDouble,
+      doubleValue: 1.0,
+    )
+    let m = Metric(
+      name: "overflow",
+      kind: mkGauge,
+      gauge: MetricGauge(dataPoints: @[dp]),
+    )
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let attrs_j = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]["attributes"]
+    check attrs_j.len == 128
+
+suite "Temporality selector — end-to-end through encoder":
+  proc makeCounterWithCumulative(): Metric =
+    Metric(
+      name: "req_total",
+      kind: mkSum,
+      sum: MetricSum(
+        dataPoints: @[NumberDataPoint(
+          attributes:  initAttributeSet(),
+          timeUnixNano: 1'u64,
+          kind: ndpInt, intValue: 42,
+        )],
+        aggregationTemporality: aggTempCumulative,
+        isMonotonic: true,
+      ),
+    )
+
+  test "alwaysDelta selector relabels Sum to DELTA in JSON encoder":
+    let m = applyTemporalitySelector(makeCounterWithCumulative(), alwaysDelta())
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempDelta)
+
+  test "nil selector leaves Sum temporality unchanged in JSON encoder":
+    let m = makeCounterWithCumulative()   # no selector applied
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempCumulative)
+
+  test "alwaysCumulative selector relabels DELTA Sum to CUMULATIVE in JSON encoder":
+    var m = makeCounterWithCumulative()
+    m.sum.aggregationTemporality = aggTempDelta   # start as delta
+    let applied = applyTemporalitySelector(m, alwaysCumulative())
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[applied]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempCumulative)
+
+  test "selector is gcsafe — compiles when used from gcsafe context":
+    # This is the regression lock for the C-1 fix: verifies the selector type
+    # is {.gcsafe.} by calling it from a gcsafe proc. A compile error here
+    # means the gcsafe annotation was removed.
+    proc callFromGcsafe(sel: AggregationTemporalitySelector) {.gcsafe.} =
+      let _ = sel(mkSum)
+    callFromGcsafe(alwaysDelta())
+    callFromGcsafe(alwaysCumulative())
+    check true
