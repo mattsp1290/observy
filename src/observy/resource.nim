@@ -39,27 +39,33 @@ proc protoEncodeKeyValues*(w: var ProtoWriter; fieldNumber: uint32;
     inner.writeString(1, kv.key)
     var valW: ProtoWriter
     protoEncodeAnyValue(valW, kv.value)
-    inner.writeEmbedded(2, valW)
+    # writeEmbeddedForce: protoEncodeAnyValue is total (always emits ≥1 tag byte),
+    # so valW.buf is never empty, but use Force explicitly to prevent a future
+    # regression from silently dropping the value oneof discriminator.
+    inner.writeEmbeddedForce(2, valW)
     w.writeEmbedded(fieldNumber, inner)
 
 proc protoEncodeAnyValue*(w: var ProtoWriter; v: AnyValue) =
+  # AnyValue.value is a proto3 oneof: the SET case must always be emitted even
+  # when the value is the type's default (empty string, false, 0, 0.0, empty
+  # bytes). Use *Force variants to bypass zero-suppression for scalar cases.
   case v.kind
-  of avString: w.writeString(1, v.strVal)
-  of avBool:   w.writeBool(2, v.boolVal)
-  of avInt:    w.writeInt64(3, v.intVal)
-  of avDouble: w.writeDouble(4, v.dblVal)
+  of avString: w.writeStringForce(1, v.strVal)
+  of avBool:   w.writeBoolForce(2, v.boolVal)
+  of avInt:    w.writeInt64Force(3, v.intVal)
+  of avDouble: w.writeDoubleForce(4, v.dblVal)
   of avArray:
     var arr: ProtoWriter
     for elem in v.arrayVal:
       var elemW: ProtoWriter
       protoEncodeAnyValue(elemW, elem)
-      arr.writeEmbedded(1, elemW)
-    w.writeEmbedded(5, arr)
+      arr.writeEmbeddedForce(1, elemW)
+    w.writeEmbeddedForce(5, arr)
   of avKvList:
     var kvl: ProtoWriter
     protoEncodeKeyValues(kvl, 1, v.kvlistVal)
-    w.writeEmbedded(6, kvl)
-  of avBytes:  w.writeBytes(7, v.bytesVal)
+    w.writeEmbeddedForce(6, kvl)
+  of avBytes:  w.writeBytesForce(7, v.bytesVal)
 
 proc protoEncode*(r: Resource): seq[byte] =
   var w: ProtoWriter
