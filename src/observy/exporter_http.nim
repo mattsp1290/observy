@@ -57,7 +57,9 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
   # rather than silently sending malformed requests or allowing header injection.
   # ---------------------------------------------------------------------------
 
-  # Endpoint URL scheme must be http or https.
+  # Endpoint URL scheme must be http or https. Empty strings are skipped
+  # (they mean "signal not configured") — sendRequest already raises ValueError
+  # on an empty URL at send time, providing the second line of defence.
   block:
     var eps = @[config.endpoint]
     for s in config.signalEndpoints: eps.add(s)

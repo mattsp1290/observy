@@ -79,7 +79,7 @@ All flags are pre-set in `examples/nim.cfg`:
 |---|---|---|
 | `--mm:orc` | yes | Memory management (ORC) — required by observy |
 | `--threads:on` | yes | Thread support — required by observy |
-| `-d:observyGzip` | optional | Enable gzip compression (requires zlib) |
+| `-d:observyGzip` | not yet | Gzip compression — **not yet implemented** (tracked: observy-5a9). Compiling with this flag does not enable compression; setting `OTEL_EXPORTER_OTLP_COMPRESSION=gzip` raises at construction until the feature lands. |
 | `-d:ssl` | optional | Enable HTTPS endpoints (requires OpenSSL) |
 
 ---
