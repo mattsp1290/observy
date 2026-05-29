@@ -95,10 +95,7 @@ proc protoEncodeSpan*(w: var ProtoWriter; s: Span) =
   w.writeBytes(2, s.spanId)
   w.writeString(3, s.traceState)
   # parentSpanId: omit when all-zero (root span); proto3 bytes default is empty
-  var hasParent = false
-  for b in s.parentSpanId:
-    if b != 0: hasParent = true; break
-  if hasParent:
+  if not isAllZero(s.parentSpanId):
     w.writeBytes(4, s.parentSpanId)
   w.writeString(5, s.name)
   w.writeInt32(6, int32(s.kind))
@@ -150,13 +147,12 @@ proc jsonEncodeSpanLink(l: SpanLink): string =
 proc jsonEncodeSpan*(s: Span): string =
   result = "{\"traceId\":\"" & hexEncodeTraceId(s.traceId) & "\""
   result.add(",\"spanId\":\"" & hexEncodeSpanId(s.spanId) & "\"")
-  var hasParent = false
-  for b in s.parentSpanId:
-    if b != 0: hasParent = true; break
-  if hasParent:
+  if not isAllZero(s.parentSpanId):
     result.add(",\"parentSpanId\":\"" & hexEncodeSpanId(s.parentSpanId) & "\"")
   if s.traceState.len > 0:
     result.add(",\"traceState\":" & jsonEscape(s.traceState))
+  # name/startTimeUnixNano/endTimeUnixNano are always emitted in JSON (unlike
+  # proto's zero-suppression) — they are required, non-omittable span fields.
   result.add(",\"name\":" & jsonEscape(s.name))
   if s.kind != skUnspecified:
     result.add(",\"kind\":" & $int(s.kind))
@@ -185,9 +181,14 @@ proc jsonEncodeSpan*(s: Span): string =
   if s.droppedLinksCount != 0:
     result.add(",\"droppedLinksCount\":" & $s.droppedLinksCount)
   if s.status.code != statusUnset or s.status.message.len > 0:
-    result.add(",\"status\":{\"code\":" & $int(s.status.code))
+    result.add(",\"status\":{")
+    var statusFields = 0
+    if s.status.code != statusUnset:
+      result.add("\"code\":" & $int(s.status.code))
+      inc statusFields
     if s.status.message.len > 0:
-      result.add(",\"message\":" & jsonEscape(s.status.message))
+      if statusFields > 0: result.add(",")
+      result.add("\"message\":" & jsonEscape(s.status.message))
     result.add("}")
   if s.flags != 0:
     result.add(",\"flags\":" & $s.flags)

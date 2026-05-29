@@ -1,7 +1,7 @@
 import unittest
-import std/os
 import ../src/observy/anyvalue
 import ../src/observy/proto
+import ./testutil
 
 # ---------------------------------------------------------------------------
 # Varint encode/decode
@@ -365,11 +365,6 @@ suite "validation":
 # Construct the same Nim model used in tools/gen_fixtures.py, encode with
 # ProtoWriter, compare output byte-for-byte against the Python-SDK-generated .bin
 # ---------------------------------------------------------------------------
-
-proc readBin(path: string): seq[byte] =
-  let s = readFile(path)
-  result = newSeq[byte](s.len)
-  for i, c in s: result[i] = byte(c)
 
 proc encodeAnyValue(w: var ProtoWriter; v: AnyValue) =
   # avArray/avKvList intentionally not handled here — none of the current fixtures

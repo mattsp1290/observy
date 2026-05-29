@@ -1,11 +1,11 @@
 import unittest
 import std/json
-import std/os
 import ../src/observy/anyvalue
 import ../src/observy/proto
 import ../src/observy/resource
 import ../src/observy/traces
 import ../src/observy/logs
+import ./testutil
 
 suite "Logs data model":
   test "SeverityNumber covers all 25 spec values":
@@ -113,11 +113,6 @@ suite "Logs data model":
 # Proto encoding tests
 # ---------------------------------------------------------------------------
 
-proc readBin(path: string): seq[byte] =
-  let s = readFile(path)
-  result = newSeq[byte](s.len)
-  for i, c in s: result[i] = byte(c)
-
 proc makeLogRecord(): LogRecord =
   ## Constructs the same LogRecord as in tools/gen_fixtures.py (log_record.bin)
   const
@@ -140,11 +135,41 @@ proc makeLogRecord(): LogRecord =
     spanId:               SID,
   )
 
+proc protoFieldNumbers(buf: seq[byte]): seq[uint32] =
+  ## Decode top-level field numbers present in a proto message buffer.
+  var r = ProtoReader(data: buf)
+  while r.pos < buf.len:
+    let (fn, wt) = r.readTag()
+    result.add(fn)
+    r.skipField(wt)
+
 suite "Logs proto encoding":
   test "log_record.bin — fixed64 times, fixed32 flags, body AnyValue, attributes":
     var w: ProtoWriter
     protoEncodeLogRecord(w, makeLogRecord())
     check w.buf == readBin("tests/fixtures/proto/log_record.bin")
+
+  test "context-less log omits traceId (field 9) and spanId (field 10)":
+    # Regression: fixed-size arrays never have len 0, so writeBytes can't
+    # auto-suppress an all-zero traceId/spanId. The encoder must guard explicitly.
+    let rec = LogRecord(
+      timeUnixNano: 1_000_000_000_000_000_000'u64,
+      severityNumber: severityInfo,
+      body: AnyValue(kind: avString, strVal: "no trace context"),
+      attributes: initAttributeSet(),
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 9'u32 notin fields    # traceId absent
+    check 10'u32 notin fields   # spanId absent
+
+  test "log with trace context includes fields 9 and 10":
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, makeLogRecord())
+    let fields = protoFieldNumbers(w.buf)
+    check 9'u32 in fields
+    check 10'u32 in fields
 
 suite "Logs JSON encoding":
   test "jsonEncodeLogRecord produces valid JSON with severity and body":
@@ -168,6 +193,18 @@ suite "Logs JSON encoding":
     let j = parseJson(jsonEncodeLogRecord(rec))
     check not j.hasKey("traceId")
     check not j.hasKey("spanId")
+
+  test "jsonEncodeLogRecord omits body when default empty-string AnyValue":
+    # Matches the proto encoder, which suppresses the empty embedded body message.
+    let rec = LogRecord(timeUnixNano: 1'u64, attributes: initAttributeSet())
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check not j.hasKey("body")
+
+  test "jsonEncodeLogRecord includes body when explicitly set":
+    let rec = LogRecord(timeUnixNano: 1'u64, attributes: initAttributeSet(),
+                        body: AnyValue(kind: avString, strVal: "hello"))
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["stringValue"].getStr() == "hello"
 
   test "logRecordsToJson produces ExportLogsServiceRequest structure":
     let j = parseJson(logRecordsToJson(

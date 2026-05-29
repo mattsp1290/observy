@@ -66,8 +66,13 @@ proc protoEncodeLogRecord*(w: var ProtoWriter; l: LogRecord) =
   protoEncodeKeyValues(w, 6, l.attributes.pairs)
   w.writeUint32(7, l.droppedAttributesCount)
   w.writeFixed32(8, l.flags)      # flags is fixed32 in LogRecord
-  w.writeBytes(9, l.traceId)
-  w.writeBytes(10, l.spanId)
+  # traceId/spanId are fixed-size arrays (len never 0), so writeBytes can't
+  # auto-suppress them. Omit explicitly for context-less logs to match the
+  # proto3 empty-bytes default (and the JSON encoder below).
+  if not isAllZero(l.traceId):
+    w.writeBytes(9, l.traceId)
+  if not isAllZero(l.spanId):
+    w.writeBytes(10, l.spanId)
   w.writeFixed64(11, l.observedTimeUnixNano)
   w.writeString(12, l.eventName)
 
@@ -81,22 +86,19 @@ proc jsonEncodeLogRecord*(l: LogRecord): string =
     result.add(",\"severityNumber\":" & $int(l.severityNumber))
   if l.severityText.len > 0:
     result.add(",\"severityText\":" & jsonEscape(l.severityText))
-  result.add(",\"body\":" & jsonEncodeAnyValue(l.body))
+  # Omit body when it's the default empty-string AnyValue, matching the proto
+  # encoder (which suppresses the empty embedded message at field 5).
+  if l.body.kind != avString or l.body.strVal.len > 0:
+    result.add(",\"body\":" & jsonEncodeAnyValue(l.body))
   if l.attributes.pairs.len > 0:
     result.add(",\"attributes\":" & jsonEncodeKVList(l.attributes.pairs))
   if l.droppedAttributesCount != 0:
     result.add(",\"droppedAttributesCount\":" & $l.droppedAttributesCount)
   if l.flags != 0:
     result.add(",\"flags\":" & $l.flags)
-  var hasTraceId = false
-  for b in l.traceId:
-    if b != 0: hasTraceId = true; break
-  if hasTraceId:
+  if not isAllZero(l.traceId):
     result.add(",\"traceId\":\"" & hexEncodeTraceId(l.traceId) & "\"")
-  var hasSpanId = false
-  for b in l.spanId:
-    if b != 0: hasSpanId = true; break
-  if hasSpanId:
+  if not isAllZero(l.spanId):
     result.add(",\"spanId\":\"" & hexEncodeSpanId(l.spanId) & "\"")
   if l.observedTimeUnixNano != 0:
     result.add(",\"observedTimeUnixNano\":" & jsonEncodeUint64(l.observedTimeUnixNano))

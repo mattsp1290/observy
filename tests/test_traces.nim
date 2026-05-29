@@ -1,10 +1,10 @@
 import unittest
 import std/json
-import std/os
 import ../src/observy/anyvalue
 import ../src/observy/proto
 import ../src/observy/resource
 import ../src/observy/traces
+import ./testutil
 
 suite "Traces data model":
   test "TraceId and SpanId are correct byte arrays":
@@ -131,11 +131,6 @@ suite "Traces data model":
 # Proto encoding tests
 # ---------------------------------------------------------------------------
 
-proc readBin(path: string): seq[byte] =
-  let s = readFile(path)
-  result = newSeq[byte](s.len)
-  for i, c in s: result[i] = byte(c)
-
 proc makeFullSpan(): Span =
   ## Constructs the same Span as in tools/gen_fixtures.py (full_span.bin)
   const
@@ -250,3 +245,19 @@ suite "Traces JSON encoding":
                  spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet())
     let j = parseJson(jsonEncodeSpan(s))
     check not j.hasKey("parentSpanId")
+
+  test "status with message but unset code omits code field":
+    # Exercises the status branch where only a message is present (code stays 0).
+    let s = Span(name: "s", traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                 spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet(),
+                 status: SpanStatus(code: statusUnset, message: "boom"))
+    let j = parseJson(jsonEncodeSpan(s))
+    check j["status"]["message"].getStr() == "boom"
+    check not j["status"].hasKey("code")   # statusUnset (0) omitted
+
+  test "status with OK code emits code field":
+    let s = Span(name: "s", traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                 spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet(),
+                 status: SpanStatus(code: statusOk))
+    let j = parseJson(jsonEncodeSpan(s))
+    check j["status"]["code"].getInt() == 1
