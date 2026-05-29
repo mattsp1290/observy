@@ -136,14 +136,6 @@ proc makeLogRecord(): LogRecord =
     spanId:               SID,
   )
 
-proc protoFieldNumbers(buf: seq[byte]): seq[uint32] =
-  ## Decode top-level field numbers present in a proto message buffer.
-  var r = ProtoReader(data: buf)
-  while r.pos < buf.len:
-    let (fn, wt) = r.readTag()
-    result.add(fn)
-    r.skipField(wt)
-
 suite "Logs proto encoding":
   test "log_record.bin — fixed64 times, fixed32 flags, body AnyValue, attributes":
     var w: ProtoWriter

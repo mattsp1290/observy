@@ -58,7 +58,7 @@ when defined(liveCollector):
       assertServiceName(json, "observy-test")
       assertLogBody(json, "integration-log-body")
       assertTraceIdHex(json, "aabbccddeeff00112233445566778899")
-      check strutils.contains(json, "\"severityNumber\":9")
+      check strutils.contains(json, "\"severityText\":\"INFO\"")
 
     test "wrong log body assertion fails as expected":
       let res   = makeILogResource("observy-test")

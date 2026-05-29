@@ -32,7 +32,7 @@ type
     pairs*:       seq[KeyValue]
     maxCount*:    int
     maxValueLen*: int
-    dropped*:     uint32
+    dropped*:     uint32  ## uint32 matches OTLP dropped_attributes_count field width
 
 proc initAttributeSet*(maxCount = DEFAULT_MAX_ATTRIBUTES;
                        maxValueLen = DEFAULT_MAX_VALUE_LEN): AttributeSet =

@@ -263,13 +263,6 @@ suite "Traces JSON encoding":
     let j = parseJson(jsonEncodeSpan(s))
     check j["status"]["code"].getInt() == 1
 
-proc protoFieldNumbers(buf: seq[byte]): seq[uint32] =
-  var r = ProtoReader(data: buf)
-  while r.pos < buf.len:
-    let (fn, wt) = r.readTag()
-    result.add(fn)
-    r.skipField(wt)
-
 suite "Traces attribute limit enforcement":
   test "AttributeSet drops and counts excess attributes":
     var attrs = initAttributeSet()  # maxCount = 128
@@ -348,7 +341,7 @@ suite "Traces SpanEvent and SpanLink proto":
     check 5'u32 in fields              # droppedAttributesCount
 
 suite "Traces SpanStatus proto encoding":
-  test "SpanStatus ERROR with message encodes both code and message":
+  test "SpanStatus ERROR with message — status field (15) present in proto":
     let span = Span(
       name: "error-span",
       traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],

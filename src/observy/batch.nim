@@ -37,10 +37,12 @@ type
     ## Channel/Thread/Atomic make it non-copyable and non-movable (the compiler
     ## enforces this), so the worker's `addr p` stays valid for its whole life.
     ## Backpressure policy: submit() BLOCKS the producing thread when the bounded
-    ## queue (maxQueueSize) is full — no data is dropped. Treat one processor as
-    ## single-producer: submit(), forceFlush() and shutdown() must not be called
-    ## concurrently with one another (use your own sync if multiple threads
-    ## drive it). Called sequentially from one producer thread, all are safe.
+    ## queue (maxQueueSize) is full — no data is dropped.
+    ## Concurrency: submit() IS safe to call from multiple producer threads
+    ## concurrently (the bounded channel serializes sends under its internal lock).
+    ## forceFlush() and shutdown() are NOT concurrency-safe — they must be driven
+    ## by a single coordinating thread and must not overlap with each other or race
+    ## with shutdown().
     config*:        BatchConfig
     chan:           Channel[T]
     thread:         Thread[ptr BatchProcessor[T]]

@@ -290,10 +290,10 @@ suite "BatchProcessor — maxSize fires during submission (not only on stop)":
     p.start(recordBatch)
     for i in 0 ..< 6:           # 5 triggers one flush, 6th queues
       p.submit(Item(id: i, name: ""))
-    # Give the worker time to process the maxSize batch without forcing a flush.
+    # Timing-dependent: sleep gives the worker time to flush the maxSize batch.
+    # Lower-bound assert (>= 5) mitigates flakiness on loaded CI.
     sleep(200)
     let midSizes = drainSizes()
-    # At least the first batch of 5 should have fired by now.
     check sum(midSizes) >= 5
     p.shutdown()
     discard drainSizes()    # drain remainder
