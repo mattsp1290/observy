@@ -38,7 +38,9 @@ type
     ## enforces this), so the worker's `addr p` stays valid for its whole life.
     ## Backpressure policy: submit() BLOCKS the producing thread when the bounded
     ## queue (maxQueueSize) is full — no data is dropped. Treat one processor as
-    ## single-producer (or guard submit/stop with your own sync).
+    ## single-producer: submit(), forceFlush() and shutdown() must not be called
+    ## concurrently with one another (use your own sync if multiple threads
+    ## drive it). Called sequentially from one producer thread, all are safe.
     config*:        BatchConfig
     chan:           Channel[T]
     thread:         Thread[ptr BatchProcessor[T]]
@@ -61,11 +63,13 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
   template flush() =
     if batch.len > 0:
       # A flush hitting a network error / 5xx is normal operation for an
-      # exporter; an exception escaping the thread proc would abort the whole
-      # process, so it is caught here. The batch is dropped after reporting.
+      # exporter; ANYTHING escaping the thread proc would abort the whole
+      # process (and now also hang a blocking forceFlush), so we catch the root
+      # `Exception` — both CatchableError AND Defect (e.g. a buggy user onBatch
+      # raising IndexDefect). The batch is dropped after reporting.
       try:
         p.onBatch(batch)
-      except CatchableError as ex:
+      except Exception as ex:
         if p.onError != nil:
           p.onError("batch flush failed: " & ex.msg)
         else:
@@ -107,6 +111,12 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
     if batch.len >= p.config.maxSize:
       flush()
   flush()
+  # Defensive: if a forceFlush raced into the stop window (out of the documented
+  # single-producer contract) its caller would be parked on ackChan.recv(); ack
+  # it now so it returns cleanly instead of blocking on a soon-to-close channel.
+  if p.flushRequested.load(moAcquire):
+    p.flushRequested.store(false, moRelease)
+    p.ackChan.send(true)
 
 proc start*[T](p: var BatchProcessor[T];
                onBatch: proc (items: seq[T]) {.gcsafe.};
@@ -137,7 +147,7 @@ proc submit*[T](p: var BatchProcessor[T]; item: sink T) =
   ## isolate() asserts at compile time that `item` has no outside references
   ## before it crosses the thread boundary.
   if not p.started.load(moAcquire):
-    raise newException(ValueError, "submit() called before start() or after stop()")
+    raise newException(ValueError, "submit() called before start() or after shutdown()")
   var iso = isolate(item)
   p.chan.send(extract(iso))
 

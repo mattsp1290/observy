@@ -224,3 +224,36 @@ suite "BatchProcessor — forceFlush and shutdown":
       p.forceFlush()
     discard drainSizes()
     sizeChan.close()
+
+suite "BatchProcessor — Defect in onBatch does not kill the worker":
+  test "onBatch raising a Defect is caught; forceFlush still returns and later batches flush":
+    sizeChan.open()
+    var errs: Channel[string]
+    errs.open()
+    var flushNo: Atomic[int]
+    proc defecty(items: seq[Item]) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        let n = flushNo.fetchAdd(1)
+        if n == 0:
+          raise newException(IndexDefect, "defect-boom")   # a Defect, not CatchableError
+        sizeChan.send(items.len)
+    proc onErr(msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: errs.send(msg)
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 1000, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(defecty, onErr)
+    p.submit(Item(id: 1, name: ""))
+    p.forceFlush()           # first flush raises a Defect; must NOT hang here
+    p.submit(Item(id: 2, name: ""))
+    p.forceFlush()           # worker still alive → second flush records
+    let sizes = drainSizes()
+    var errMsgs: seq[string]
+    while true:
+      let (ok, m) = errs.tryRecv()
+      if not ok: break
+      errMsgs.add(m)
+    p.shutdown()
+    errs.close(); sizeChan.close()
+    check errMsgs.len == 1
+    check errMsgs[0].contains("defect-boom")
+    check sizes == @[1]       # the second batch (1 item) flushed; worker survived
