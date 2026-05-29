@@ -38,7 +38,9 @@ type
     ## enforces this), so the worker's `addr p` stays valid for its whole life.
     ## Backpressure policy: submit() BLOCKS the producing thread when the bounded
     ## queue (maxQueueSize) is full — no data is dropped. Treat one processor as
-    ## single-producer (or guard submit/stop with your own sync).
+    ## single-producer: submit(), forceFlush() and shutdown() must not be called
+    ## concurrently with one another (use your own sync if multiple threads
+    ## drive it). Called sequentially from one producer thread, all are safe.
     config*:        BatchConfig
     chan:           Channel[T]
     thread:         Thread[ptr BatchProcessor[T]]
@@ -46,6 +48,8 @@ type
     onError:        BatchErrorProc        ## called if a flush raises; nil → stderr
     stopRequested:  Atomic[bool]
     started:        Atomic[bool]
+    flushRequested: Atomic[bool]          ## forceFlush sets this; worker clears it
+    ackChan:        Channel[bool]         ## worker → forceFlush "flush complete" ack
 
 proc defaultBatchConfig*(): BatchConfig =
   BatchConfig(maxSize: 512, flushIntervalMs: 5000, maxQueueSize: 2048)
@@ -59,11 +63,13 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
   template flush() =
     if batch.len > 0:
       # A flush hitting a network error / 5xx is normal operation for an
-      # exporter; an exception escaping the thread proc would abort the whole
-      # process, so it is caught here. The batch is dropped after reporting.
+      # exporter; ANYTHING escaping the thread proc would abort the whole
+      # process (and now also hang a blocking forceFlush), so we catch the root
+      # `Exception` — both CatchableError AND Defect (e.g. a buggy user onBatch
+      # raising IndexDefect). The batch is dropped after reporting.
       try:
         p.onBatch(batch)
-      except CatchableError as ex:
+      except Exception as ex:
         if p.onError != nil:
           p.onError("batch flush failed: " & ex.msg)
         else:
@@ -76,6 +82,18 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
     # can't starve the stop signal and hang stop()/joinThread.
     if p.stopRequested.load(moAcquire):
       break
+    # forceFlush: drain everything queued so far (FIFO ⇒ all items submitted
+    # before forceFlush are included), flush, then ack so forceFlush unblocks.
+    if p.flushRequested.load(moAcquire):
+      while true:
+        let (ok, item) = p.chan.tryRecv()
+        if not ok: break
+        batch.add(item)
+        if batch.len >= p.config.maxSize:
+          flush()
+      flush()
+      p.flushRequested.store(false, moRelease)
+      p.ackChan.send(true)
     let (ok, item) = p.chan.tryRecv()
     if ok:
       batch.add(item)
@@ -93,6 +111,12 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
     if batch.len >= p.config.maxSize:
       flush()
   flush()
+  # Defensive: if a forceFlush raced into the stop window (out of the documented
+  # single-producer contract) its caller would be parked on ackChan.recv(); ack
+  # it now so it returns cleanly instead of blocking on a soon-to-close channel.
+  if p.flushRequested.load(moAcquire):
+    p.flushRequested.store(false, moRelease)
+    p.ackChan.send(true)
 
 proc start*[T](p: var BatchProcessor[T];
                onBatch: proc (items: seq[T]) {.gcsafe.};
@@ -104,7 +128,9 @@ proc start*[T](p: var BatchProcessor[T];
   p.onBatch = onBatch
   p.onError = onError
   p.stopRequested.store(false, moRelease)
+  p.flushRequested.store(false, moRelease)
   p.chan.open(p.config.maxQueueSize)
+  p.ackChan.open()
   p.started.store(true, moRelease)
   createThread(p.thread, worker[T], addr p)
 
@@ -121,14 +147,31 @@ proc submit*[T](p: var BatchProcessor[T]; item: sink T) =
   ## isolate() asserts at compile time that `item` has no outside references
   ## before it crosses the thread boundary.
   if not p.started.load(moAcquire):
-    raise newException(ValueError, "submit() called before start() or after stop()")
+    raise newException(ValueError, "submit() called before start() or after shutdown()")
   var iso = isolate(item)
   p.chan.send(extract(iso))
 
-proc stop*[T](p: var BatchProcessor[T]) =
-  ## Request stop, wait for the worker to drain + final-flush, then close.
+proc forceFlush*[T](p: var BatchProcessor[T]) =
+  ## Synchronously flush everything submitted so far: signal the worker, then
+  ## block until it confirms the flush is complete. Required for short-lived /
+  ## serverless programs that must not exit with buffered telemetry. No-op-safe
+  ## when the batch is empty (the worker acks without calling onBatch).
+  if not p.started.load(moAcquire):
+    raise newException(ValueError, "forceFlush() called before start() or after shutdown()")
+  p.flushRequested.store(true, moRelease)
+  discard p.ackChan.recv()   # blocks until the worker has flushed and acked
+
+proc shutdown*[T](p: var BatchProcessor[T]) =
+  ## Blocking, graceful stop: reject further submits, signal the worker, and join
+  ## it after it has drained the queue and final-flushed. All items submitted
+  ## before shutdown() are exported before this returns. Idempotent.
   if not p.started.load(moAcquire): return
   p.started.store(false, moRelease)   # reject further submit() before close
   p.stopRequested.store(true, moRelease)
   joinThread(p.thread)
   p.chan.close()
+  p.ackChan.close()
+
+proc stop*[T](p: var BatchProcessor[T]) =
+  ## Alias for shutdown() (kept for call sites that used the earlier name).
+  shutdown(p)

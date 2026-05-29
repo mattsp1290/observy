@@ -172,3 +172,88 @@ suite "BatchProcessor — lifecycle guards and error isolation":
     discard drainSizes()
     sizeChan.close()
     check true
+
+suite "BatchProcessor — forceFlush and shutdown":
+  test "shutdown exports all enqueued items before returning":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 100, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(recordBatch)
+    for i in 0 ..< 10:
+      p.submit(Item(id: i, name: ""))
+    p.shutdown()             # blocks until drained + flushed
+    let sizes = drainSizes() # all sends already completed before shutdown returned
+    sizeChan.close()
+    check sum(sizes) == 10   # every item exported
+
+  test "forceFlush flushes pending items synchronously, worker keeps running":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 1000, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(recordBatch)
+    for i in 0 ..< 5:
+      p.submit(Item(id: i, name: ""))
+    p.forceFlush()           # blocks until the 5 are flushed
+    let afterFirst = drainSizes()
+    check sum(afterFirst) == 5
+    # processor still running: submit more, forceFlush again
+    for i in 0 ..< 3:
+      p.submit(Item(id: i, name: ""))
+    p.forceFlush()
+    let afterSecond = drainSizes()
+    p.shutdown()
+    sizeChan.close()
+    check sum(afterSecond) == 3
+
+  test "forceFlush with no pending items is a no-op (acks, no batch)":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.forceFlush()           # must not block forever; no onBatch call
+    let sizes = drainSizes()
+    p.shutdown()
+    sizeChan.close()
+    check sizes.len == 0
+
+  test "forceFlush after shutdown raises":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.shutdown()
+    expect ValueError:
+      p.forceFlush()
+    discard drainSizes()
+    sizeChan.close()
+
+suite "BatchProcessor — Defect in onBatch does not kill the worker":
+  test "onBatch raising a Defect is caught; forceFlush still returns and later batches flush":
+    sizeChan.open()
+    var errs: Channel[string]
+    errs.open()
+    var flushNo: Atomic[int]
+    proc defecty(items: seq[Item]) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        let n = flushNo.fetchAdd(1)
+        if n == 0:
+          raise newException(IndexDefect, "defect-boom")   # a Defect, not CatchableError
+        sizeChan.send(items.len)
+    proc onErr(msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: errs.send(msg)
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 1000, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(defecty, onErr)
+    p.submit(Item(id: 1, name: ""))
+    p.forceFlush()           # first flush raises a Defect; must NOT hang here
+    p.submit(Item(id: 2, name: ""))
+    p.forceFlush()           # worker still alive → second flush records
+    let sizes = drainSizes()
+    var errMsgs: seq[string]
+    while true:
+      let (ok, m) = errs.tryRecv()
+      if not ok: break
+      errMsgs.add(m)
+    p.shutdown()
+    errs.close(); sizeChan.close()
+    check errMsgs.len == 1
+    check errMsgs[0].contains("defect-boom")
+    check sizes == @[1]       # the second batch (1 item) flushed; worker survived
