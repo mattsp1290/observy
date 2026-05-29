@@ -3,6 +3,7 @@ import std/json
 import ../src/observy/anyvalue
 import ../src/observy/proto
 import ../src/observy/resource
+import std/sequtils
 import ../src/observy/traces
 import ./testutil
 
@@ -261,3 +262,113 @@ suite "Traces JSON encoding":
                  status: SpanStatus(code: statusOk))
     let j = parseJson(jsonEncodeSpan(s))
     check j["status"]["code"].getInt() == 1
+
+proc protoFieldNumbers(buf: seq[byte]): seq[uint32] =
+  var r = ProtoReader(data: buf)
+  while r.pos < buf.len:
+    let (fn, wt) = r.readTag()
+    result.add(fn)
+    r.skipField(wt)
+
+suite "Traces attribute limit enforcement":
+  test "AttributeSet drops and counts excess attributes":
+    var attrs = initAttributeSet()  # maxCount = 128
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    check attrs.pairs.len == 128
+    check attrs.dropped == 2'u32
+
+  test "attribute limit — only 128 attrs in proto encoded span":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let span = Span(
+      name: "limit-test",
+      traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      spanId: [0x01'u8, 0,0,0,0,0,0,0],
+      attributes: attrs,
+      droppedAttributesCount: attrs.dropped,
+    )
+    var w: ProtoWriter
+    protoEncodeSpan(w, span)
+    let fields = protoFieldNumbers(w.buf)
+    # field 9 = attributes (repeated), field 10 = droppedAttributesCount
+    check fields.count(9'u32) == 128
+    check 10'u32 in fields
+
+  test "droppedAttributesCount emitted in JSON when set from attrs.dropped":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let span = Span(
+      name: "limit-test",
+      traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      spanId: [0x01'u8, 0,0,0,0,0,0,0],
+      attributes: attrs,
+      droppedAttributesCount: attrs.dropped,
+    )
+    let j = parseJson(jsonEncodeSpan(span))
+    check j["attributes"].len == 128
+    check j["droppedAttributesCount"].getInt() == 2
+
+suite "Traces SpanEvent and SpanLink proto":
+  test "SpanEvent proto encodes field 4 droppedAttributesCount when set":
+    var evAttrs = initAttributeSet()
+    for i in 0 ..< 130:
+      evAttrs.add("ek" & $i, AnyValue(kind: avString, strVal: "x"))
+    let ev = SpanEvent(
+      timeUnixNano: 1_000_000'u64,
+      name: "overflowed-event",
+      attributes: evAttrs,
+      droppedAttributesCount: evAttrs.dropped,
+    )
+    var w: ProtoWriter
+    protoEncodeSpanEvent(w, ev)
+    let fields = protoFieldNumbers(w.buf)
+    check fields.count(3'u32) == 128   # attributes
+    check 4'u32 in fields              # droppedAttributesCount
+
+  test "SpanLink proto encodes traceState and field 5 droppedAttributesCount":
+    var lkAttrs = initAttributeSet()
+    for i in 0 ..< 130:
+      lkAttrs.add("lk" & $i, AnyValue(kind: avString, strVal: "y"))
+    let lk = SpanLink(
+      traceId: [0xFF'u8, 0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,
+                0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF,0xFF],
+      spanId: [0x11'u8, 0x22,0x33,0x44,0x55,0x66,0x77,0x88],
+      traceState: "vendor=abc",
+      attributes: lkAttrs,
+      droppedAttributesCount: lkAttrs.dropped,
+    )
+    var w: ProtoWriter
+    protoEncodeSpanLink(w, lk)
+    let fields = protoFieldNumbers(w.buf)
+    check 3'u32 in fields              # traceState
+    check fields.count(4'u32) == 128   # attributes
+    check 5'u32 in fields              # droppedAttributesCount
+
+suite "Traces SpanStatus proto encoding":
+  test "SpanStatus ERROR with message encodes both code and message":
+    let span = Span(
+      name: "error-span",
+      traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      spanId: [0x01'u8, 0,0,0,0,0,0,0],
+      attributes: initAttributeSet(),
+      status: SpanStatus(code: statusError, message: "something went wrong"),
+    )
+    var w: ProtoWriter
+    protoEncodeSpan(w, span)
+    let fields = protoFieldNumbers(w.buf)
+    check 15'u32 in fields   # status field present
+
+  test "SpanStatus ERROR with message in JSON":
+    let span = Span(
+      name: "error-span",
+      traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+      spanId: [0x01'u8, 0,0,0,0,0,0,0],
+      attributes: initAttributeSet(),
+      status: SpanStatus(code: statusError, message: "something went wrong"),
+    )
+    let j = parseJson(jsonEncodeSpan(span))
+    check j["status"]["code"].getInt() == 2
+    check j["status"]["message"].getStr() == "something went wrong"

@@ -32,6 +32,7 @@ type
     pairs*:       seq[KeyValue]
     maxCount*:    int
     maxValueLen*: int
+    dropped*:     uint32
 
 proc initAttributeSet*(maxCount = DEFAULT_MAX_ATTRIBUTES;
                        maxValueLen = DEFAULT_MAX_VALUE_LEN): AttributeSet =
@@ -84,5 +85,7 @@ proc truncateValue*(v: AnyValue; maxValueLen: int): AnyValue =
     v
 
 proc add*(a: var AttributeSet; k: string; v: AnyValue) =
-  if a.pairs.len >= a.maxCount: return
+  if a.pairs.len >= a.maxCount:
+    inc a.dropped
+    return
   a.pairs.add(KeyValue(key: k, value: truncateValue(v, a.maxValueLen)))
