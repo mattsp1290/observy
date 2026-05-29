@@ -6,6 +6,8 @@ const
   WireLen*    = 2'u8
   Wire32*     = 5'u8
 
+type ProtoError* = object of IOError
+
 # ---------------------------------------------------------------------------
 # ProtoWriter
 # ---------------------------------------------------------------------------
@@ -21,6 +23,8 @@ proc writeVarint*(w: var ProtoWriter; v: uint64) =
   w.buf.add(byte(x))
 
 proc writeTag*(w: var ProtoWriter; fieldNumber: uint32; wireType: uint8) {.inline.} =
+  if fieldNumber == 0:
+    raise newException(ProtoError, "proto: field number 0 is invalid")
   w.writeVarint(uint64(fieldNumber shl 3) or uint64(wireType))
 
 proc writeInt32*(w: var ProtoWriter; fieldNumber: uint32; v: int32) =
@@ -77,12 +81,18 @@ proc writeFixed64*(w: var ProtoWriter; fieldNumber: uint32; v: uint64) =
 proc writeFloat*(w: var ProtoWriter; fieldNumber: uint32; v: float32) =
   let bits = cast[uint32](v)
   if bits == 0: return
-  w.writeFixed32(fieldNumber, bits)
+  w.writeTag(fieldNumber, Wire32)
+  w.buf.add(byte(bits and 0xFF))
+  w.buf.add(byte((bits shr 8) and 0xFF))
+  w.buf.add(byte((bits shr 16) and 0xFF))
+  w.buf.add(byte((bits shr 24) and 0xFF))
 
 proc writeDouble*(w: var ProtoWriter; fieldNumber: uint32; v: float64) =
   let bits = cast[uint64](v)
   if bits == 0: return
-  w.writeFixed64(fieldNumber, bits)
+  w.writeTag(fieldNumber, Wire64)
+  for i in 0 ..< 8:
+    w.buf.add(byte((bits shr (i * 8)) and 0xFF))
 
 proc writeBytes*(w: var ProtoWriter; fieldNumber: uint32; v: openArray[byte]) =
   if v.len == 0: return
@@ -138,7 +148,7 @@ type ProtoReader* = object
 
 proc readRawByte(r: var ProtoReader): byte =
   if r.pos >= r.data.len:
-    raise newException(IOError, "proto: unexpected end of buffer")
+    raise newException(ProtoError, "proto: unexpected end of buffer")
   result = r.data[r.pos]
   inc r.pos
 
@@ -150,21 +160,29 @@ proc readVarint*(r: var ProtoReader): uint64 =
     result = result or (uint64(b and 0x7F) shl shift)
     if (b and 0x80) == 0: break
     inc(shift, 7)
-    if shift > 63:
-      raise newException(IOError, "proto: varint overflow")
+    if shift >= 64:
+      raise newException(ProtoError, "proto: varint overflow")
 
 proc readTag*(r: var ProtoReader): (uint32, uint8) =
   let v = r.readVarint()
-  result = (uint32(v shr 3), uint8(v and 0x07))
+  let fieldNumber = uint32(v shr 3)
+  if fieldNumber == 0:
+    raise newException(ProtoError, "proto: invalid field number 0 in tag")
+  result = (fieldNumber, uint8(v and 0x07))
 
 proc readInt32*(r: var ProtoReader): int32 =
-  cast[int32](int64(cast[int64](r.readVarint())))
+  let v = r.readVarint()
+  # proto3 int32 is sign-extended from 32 bits when encoded as 64-bit varint
+  cast[int32](uint32(v and 0xFFFF_FFFF'u64))
 
 proc readInt64*(r: var ProtoReader): int64 =
   cast[int64](r.readVarint())
 
 proc readUint32*(r: var ProtoReader): uint32 =
-  uint32(r.readVarint())
+  let v = r.readVarint()
+  if v > uint64(high(uint32)):
+    raise newException(ProtoError, "proto: varint too large for uint32")
+  uint32(v)
 
 proc readUint64*(r: var ProtoReader): uint64 =
   r.readVarint()
@@ -173,7 +191,10 @@ proc readBool*(r: var ProtoReader): bool =
   r.readVarint() != 0
 
 proc readSint32*(r: var ProtoReader): int32 =
-  let z = uint32(r.readVarint())
+  let v = r.readVarint()
+  if v > uint64(high(uint32)):
+    raise newException(ProtoError, "proto: varint too large for sint32")
+  let z = uint32(v)
   cast[int32]((z shr 1) xor (0'u32 - (z and 1)))
 
 proc readSint64*(r: var ProtoReader): int64 =
@@ -199,14 +220,40 @@ proc readDouble*(r: var ProtoReader): float64 =
   cast[float64](r.readFixed64())
 
 proc readBytes*(r: var ProtoReader): seq[byte] =
-  let n = int(r.readVarint())
+  let n64 = r.readVarint()
+  let remaining = uint64(r.data.len - r.pos)
+  if n64 > remaining:
+    raise newException(ProtoError, "proto: length-delimited field exceeds buffer")
+  if n64 > uint64(high(int)):
+    raise newException(ProtoError, "proto: length-delimited field too large")
+  let n = int(n64)
   result = newSeq[byte](n)
   for i in 0 ..< n: result[i] = r.readRawByte()
 
 proc readString*(r: var ProtoReader): string =
-  let n = int(r.readVarint())
+  let n64 = r.readVarint()
+  let remaining = uint64(r.data.len - r.pos)
+  if n64 > remaining:
+    raise newException(ProtoError, "proto: string field exceeds buffer")
+  if n64 > uint64(high(int)):
+    raise newException(ProtoError, "proto: string field too large")
+  let n = int(n64)
   result = newString(n)
   for i in 0 ..< n: result[i] = char(r.readRawByte())
+
+proc skipField*(r: var ProtoReader; wireType: uint8) =
+  case wireType
+  of WireVarint: discard r.readVarint()
+  of Wire64:     discard r.readFixed64()
+  of WireLen:
+    let n64 = r.readVarint()
+    let remaining = uint64(r.data.len - r.pos)
+    if n64 > remaining:
+      raise newException(ProtoError, "proto: skip: length-delimited field exceeds buffer")
+    r.pos += int(n64)
+  of Wire32:     discard r.readFixed32()
+  else:
+    raise newException(ProtoError, "proto: unknown wire type: " & $wireType)
 
 # ---------------------------------------------------------------------------
 # Zigzag helpers (exposed for testing)

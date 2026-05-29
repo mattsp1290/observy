@@ -290,3 +290,70 @@ suite "tag encoding":
     var w: ProtoWriter
     w.writeTag(1, Wire64)
     check w.buf == @[0x09'u8]
+
+# ---------------------------------------------------------------------------
+# Validation and error handling
+# ---------------------------------------------------------------------------
+
+suite "validation":
+  test "writeTag field 0 raises ProtoError":
+    var w: ProtoWriter
+    expect ProtoError: w.writeTag(0, WireVarint)
+
+  test "readTag field 0 raises ProtoError":
+    var w: ProtoWriter
+    w.writeVarint(0'u64)  # encodes tag with field=0, wire=0
+    var r = ProtoReader(data: w.buf)
+    expect ProtoError: discard r.readTag()
+
+  test "readBytes truncated raises ProtoError":
+    # declare length 10 but provide only 3 bytes
+    var w: ProtoWriter
+    w.writeTag(1, WireLen)
+    w.writeVarint(10'u64)
+    w.buf.add(0x01'u8); w.buf.add(0x02'u8); w.buf.add(0x03'u8)
+    var r = ProtoReader(data: w.buf)
+    discard r.readTag()
+    expect ProtoError: discard r.readBytes()
+
+  test "readString truncated raises ProtoError":
+    var w: ProtoWriter
+    w.writeTag(1, WireLen)
+    w.writeVarint(5'u64)
+    w.buf.add(byte('a'))
+    var r = ProtoReader(data: w.buf)
+    discard r.readTag()
+    expect ProtoError: discard r.readString()
+
+  test "readUint32 overflow raises ProtoError":
+    var w: ProtoWriter
+    w.writeVarint(uint64(high(uint32)) + 1)
+    var r = ProtoReader(data: w.buf)
+    expect ProtoError: discard r.readUint32()
+
+  test "readSint32 overflow raises ProtoError":
+    var w: ProtoWriter
+    w.writeVarint(uint64(high(uint32)) + 1)
+    var r = ProtoReader(data: w.buf)
+    expect ProtoError: discard r.readSint32()
+
+  test "skipField varint":
+    var w: ProtoWriter
+    w.writeVarint(300'u64)
+    w.writeVarint(42'u64)
+    var r = ProtoReader(data: w.buf)
+    r.skipField(WireVarint)
+    check r.readVarint() == 42
+
+  test "skipField length-delimited":
+    var w: ProtoWriter
+    w.writeVarint(3'u64)
+    w.buf.add(0x01'u8); w.buf.add(0x02'u8); w.buf.add(0x03'u8)
+    w.writeVarint(99'u64)
+    var r = ProtoReader(data: w.buf)
+    r.skipField(WireLen)
+    check r.readVarint() == 99
+
+  test "skipField unknown wire type raises ProtoError":
+    var r = ProtoReader(data: @[0x00'u8])
+    expect ProtoError: r.skipField(3'u8)
