@@ -186,8 +186,10 @@ suite "OtlpHttpExporter lifecycle and validation":
         discard newOtlpHttpExporter(cfg)
 
   when defined(observyGzip):
-    test "gzip roundtrip — payload is compressed and Content-Encoding header set":
-      let payload = @[0x0a'u8, 0x01, 0x62, 0x03, 0x04, 0x05]
+    test "gzip roundtrip — Content-Encoding header set and gzip magic bytes present":
+      # Use a compressible payload (repeated byte pattern) large enough to produce
+      # a non-trivially compressed body.
+      let payload = newSeq[byte](64)   # 64 zero bytes, highly compressible
       let req = capture(proc (port: int) =
         var cfg = baseConfig()
         cfg.compression = compGzip
@@ -196,10 +198,14 @@ suite "OtlpHttpExporter lifecycle and validation":
         discard e.sendSignal(SigTraces, payload)
         e.close())
       check req.toLowerAscii.contains("content-encoding: gzip")
-      # The body should be shorter than or equal to the original (for small payloads
-      # gzip overhead may make it larger, but the header must be present).
       let body = req[req.find("\r\n\r\n") + 4 .. ^1]
-      check body.len > 0   # something was sent
+      check body.len > 0
+      # Verify gzip magic number (0x1f 0x8b) — guards against windowBits regression
+      # (zlib format starts 0x78; raw deflate has no header). If this ever uses
+      # deflate or zlib framing instead of gzip, this test fails.
+      check body.len >= 2
+      check byte(body[0]) == 0x1f'u8
+      check byte(body[1]) == 0x8b'u8
 
   test "empty URL raises":
     var e = newOtlpHttpExporter(baseConfig())

@@ -26,14 +26,15 @@ when defined(observyGzip):
     DefaultMemLevel = 8
     ZDefaultStrategy = 0
 
-  proc deflateInit2*(strm: ptr ZStream; level, comprMethod, windowBits,
-                     memLevel, strategy: cint): cint
+  # Raw zlib FFI — private; only gzipCompress is part of the public API.
+  proc deflateInit2(strm: ptr ZStream; level, comprMethod, windowBits,
+                    memLevel, strategy: cint): cint
     {.importc: "deflateInit2", header: "<zlib.h>".}
 
-  proc deflate*(strm: ptr ZStream; flush: cint): cint
+  proc deflate(strm: ptr ZStream; flush: cint): cint
     {.importc: "deflate", header: "<zlib.h>".}
 
-  proc deflateEnd*(strm: ptr ZStream): cint
+  proc deflateEnd(strm: ptr ZStream): cint
     {.importc: "deflateEnd", header: "<zlib.h>".}
 
   proc gzipCompress*(data: openArray[byte]): seq[byte] =

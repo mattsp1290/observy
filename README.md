@@ -126,7 +126,8 @@ exporter.close()
 | `protocol` | OtlpProtocol | `otlpProtoHttp` | `otlpProtoHttp` or `otlpJsonHttp` |
 | `compression` | CompressionType | `compNone` | `compNone` or `compGzip` (see below) |
 | `temporalitySelector` | proc | `nil` | Aggregation temporality for metrics |
-| `timeoutMs` | int | 30000 | Per-request HTTP timeout in ms |
+| `timeoutMs` | int | 10000 | Per-request HTTP timeout in ms (0 = use default) |
+| `maxRetryElapsed` | int | 300 | Max cumulative retry window in seconds (0 = 300s default) |
 
 ### OTEL_* environment variables
 
@@ -180,8 +181,15 @@ exporter.close()
 Use `retryWithBackoff` to wrap `sendSignal` with automatic retries on transient HTTP errors:
 
 ```nim
-let result = exporter.retryWithBackoff(endpoint, payload, contentType,
-  maxElapsedMs = 30_000)
+# Set max retry window via config (default: 300 seconds)
+var cfg = loadFromEnv()
+cfg.maxRetryElapsed = 30   # 30 seconds
+var exporter = newOtlpExporter(cfg)
+
+# retryWithBackoff uses cfg.maxRetryElapsed for the elapsed budget
+let result = exporter.retryWithBackoff(endpoint, payload, contentType)
+if result.succeeded:
+  echo "exported after ", result.attempts, " attempt(s)"
 ```
 
 Retried status codes: 429 (rate-limit), 502, 503, 504. Respects `Retry-After` headers. Non-retried: 400, 401, 403, 404 (permanent failures).
