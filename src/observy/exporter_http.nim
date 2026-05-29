@@ -52,6 +52,31 @@ proc defaultContentType*(p: OtlpProtocol): string =
   of otlpJsonHttp:  "application/json"
 
 proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
+  # ---------------------------------------------------------------------------
+  # Input validation at the system boundary — fail fast with a clear message
+  # rather than silently sending malformed requests or allowing header injection.
+  # ---------------------------------------------------------------------------
+
+  # Endpoint URL scheme must be http or https. Empty strings are skipped
+  # (they mean "signal not configured") — sendRequest already raises ValueError
+  # on an empty URL at send time, providing the second line of defence.
+  block:
+    var eps = @[config.endpoint]
+    for s in config.signalEndpoints: eps.add(s)
+    for ep in eps:
+      if ep.len > 0 and not (ep.startsWith("http://") or ep.startsWith("https://")):
+        raise newException(ValueError,
+          "endpoint URL must start with http:// or https://: '" & ep & "'")
+
+  # Headers must not contain CR or LF characters (prevent HTTP header injection).
+  for (k, v) in config.headers:
+    if '\r' in k or '\n' in k:
+      raise newException(ValueError,
+        "header name contains CR or LF (potential HTTP header injection): '" & k & "'")
+    if '\r' in v or '\n' in v:
+      raise newException(ValueError,
+        "header value contains CR or LF (potential HTTP header injection) for key '" & k & "'")
+
   if config.compression == compGzip:
     # gzip support is gated behind -d:observyGzip (observy-5a9) and not yet wired.
     # Fail fast rather than silently shipping uncompressed bytes the collector

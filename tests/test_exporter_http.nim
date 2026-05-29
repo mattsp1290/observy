@@ -5,6 +5,8 @@ import std/httpcore
 import ../src/observy/config
 import ../src/observy/exporter_http
 import ../src/observy/retry
+import ../src/observy/anyvalue
+import ../src/observy/traces
 
 # ---------------------------------------------------------------------------
 # Local TCP mock server
@@ -206,3 +208,101 @@ suite "retryWithBackoff integration (real send path)":
     check result.succeeded
     check result.attempts == 1
     check result.response.code == Http200
+
+suite "Input validation at system boundary":
+  # Point 1 & 2: TraceId/SpanId are Nim array types (array[16,byte], array[8,byte])
+  # enforced at compile time — no runtime validation needed. Verified by type declaration.
+  test "TraceId is compile-time-enforced 16 bytes":
+    var tid: TraceId
+    check tid.len == 16    # array type guarantees this; no runtime check needed
+
+  test "SpanId is compile-time-enforced 8 bytes":
+    var sid: SpanId
+    check sid.len == 8
+
+  # Point 3: endpoint URL scheme must be http or https
+  test "http scheme is accepted":
+    var cfg = baseConfig()
+    cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:4318/v1/traces"
+    var e = newOtlpHttpExporter(cfg)
+    e.close()
+    check true
+
+  test "https scheme is accepted":
+    var cfg = baseConfig()
+    cfg.signalEndpoints[SigTraces] = "https://collector.example.com/v1/traces"
+    var e = newOtlpHttpExporter(cfg)
+    e.close()
+    check true
+
+  test "non-http/https endpoint raises ValueError":
+    var cfg = baseConfig()
+    cfg.signalEndpoints[SigTraces] = "grpc://127.0.0.1:4317/v1/traces"
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  test "ftp endpoint raises ValueError":
+    var cfg = baseConfig()
+    cfg.endpoint = "ftp://example.com"
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  # Point 4: header key/value CR/LF injection prevention
+  test "header with CR in name raises ValueError":
+    var cfg = baseConfig()
+    cfg.headers = @[("X-Evil\rHeader", "value")]
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  test "header with LF in name raises ValueError":
+    var cfg = baseConfig()
+    cfg.headers = @[("X-Evil\nHeader", "value")]
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  test "header with CR in value raises ValueError":
+    var cfg = baseConfig()
+    cfg.headers = @[("X-Token", "legit\rX-Injected: bad")]
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  test "header with LF in value raises ValueError":
+    var cfg = baseConfig()
+    cfg.headers = @[("X-Token", "legit\nX-Injected: bad")]
+    expect ValueError:
+      var e = newOtlpHttpExporter(cfg)
+      e.close()
+
+  test "normal headers are accepted":
+    var cfg = baseConfig()
+    cfg.headers = @[("Authorization", "Bearer token123"), ("X-Tenant", "acme")]
+    var e = newOtlpHttpExporter(cfg)
+    e.close()
+    check true
+
+  # Point 5: attribute string truncation is UTF-8 safe (rune boundaries)
+  test "truncateUtf8 does not cut a 2-byte UTF-8 sequence":
+    # U+00E9 (é) is 2 bytes: 0xC3 0xA9. Truncating at 1 byte must yield empty.
+    let s = "\xC3\xA9" & "rest"    # "érest"
+    check truncateUtf8(s, 1) == ""   # can't fit the lead byte alone
+
+  test "truncateUtf8 includes a 2-byte sequence when limit allows":
+    let s = "\xC3\xA9" & "rest"
+    check truncateUtf8(s, 2) == "\xC3\xA9"
+
+  test "truncateUtf8 does not cut a 3-byte UTF-8 sequence":
+    # U+4E2D (中) is 3 bytes: 0xE4 0xB8 0xAD
+    let s = "\xE4\xB8\xAD" & "ok"
+    check truncateUtf8(s, 2) == ""   # only 2 bytes available, can't fit 3-byte char
+    check truncateUtf8(s, 3) == "\xE4\xB8\xAD"
+
+  test "attribute add truncates string value to maxValueLen rune-safely":
+    var attrs = initAttributeSet(maxCount = 128, maxValueLen = 2)
+    # 3-byte UTF-8 char: truncating at maxValueLen=2 must not cut it
+    attrs.add("k", AnyValue(kind: avString, strVal: "\xE4\xB8\xAD"))
+    check attrs.pairs[0].value.strVal == ""   # can't fit the 3-byte char in 2 bytes
