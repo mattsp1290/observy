@@ -1,6 +1,9 @@
-# Logs signal data model
+# Logs signal data model and OTLP encoding
 import ./anyvalue
 import ./traces
+import ./proto
+import ./resource
+import ./json_encode
 
 # opentelemetry-proto v1.10.0 field numbers
 # logs/v1/logs.proto
@@ -48,3 +51,67 @@ type
     traceId*:                TraceId
     spanId*:                 SpanId
     eventName*:              string
+
+# ---------------------------------------------------------------------------
+# Proto encoding
+# ---------------------------------------------------------------------------
+
+proc protoEncodeLogRecord*(w: var ProtoWriter; l: LogRecord) =
+  w.writeFixed64(1, l.timeUnixNano)
+  w.writeInt32(2, int32(l.severityNumber))
+  w.writeString(3, l.severityText)
+  var bodyW: ProtoWriter
+  protoEncodeAnyValue(bodyW, l.body)
+  w.writeEmbedded(5, bodyW)
+  protoEncodeKeyValues(w, 6, l.attributes.pairs)
+  w.writeUint32(7, l.droppedAttributesCount)
+  w.writeFixed32(8, l.flags)      # flags is fixed32 in LogRecord
+  w.writeBytes(9, l.traceId)
+  w.writeBytes(10, l.spanId)
+  w.writeFixed64(11, l.observedTimeUnixNano)
+  w.writeString(12, l.eventName)
+
+# ---------------------------------------------------------------------------
+# JSON encoding
+# ---------------------------------------------------------------------------
+
+proc jsonEncodeLogRecord*(l: LogRecord): string =
+  result = "{\"timeUnixNano\":" & jsonEncodeUint64(l.timeUnixNano)
+  if l.severityNumber != severityUnspecified:
+    result.add(",\"severityNumber\":" & $int(l.severityNumber))
+  if l.severityText.len > 0:
+    result.add(",\"severityText\":" & jsonEscape(l.severityText))
+  result.add(",\"body\":" & jsonEncodeAnyValue(l.body))
+  if l.attributes.pairs.len > 0:
+    result.add(",\"attributes\":" & jsonEncodeKVList(l.attributes.pairs))
+  if l.droppedAttributesCount != 0:
+    result.add(",\"droppedAttributesCount\":" & $l.droppedAttributesCount)
+  if l.flags != 0:
+    result.add(",\"flags\":" & $l.flags)
+  var hasTraceId = false
+  for b in l.traceId:
+    if b != 0: hasTraceId = true; break
+  if hasTraceId:
+    result.add(",\"traceId\":\"" & hexEncodeTraceId(l.traceId) & "\"")
+  var hasSpanId = false
+  for b in l.spanId:
+    if b != 0: hasSpanId = true; break
+  if hasSpanId:
+    result.add(",\"spanId\":\"" & hexEncodeSpanId(l.spanId) & "\"")
+  if l.observedTimeUnixNano != 0:
+    result.add(",\"observedTimeUnixNano\":" & jsonEncodeUint64(l.observedTimeUnixNano))
+  if l.eventName.len > 0:
+    result.add(",\"eventName\":" & jsonEscape(l.eventName))
+  result.add("}")
+
+proc logRecordsToJson*(res: Resource; scope: InstrumentationScope;
+                       records: seq[LogRecord]): string =
+  ## Encode log records as an OTLP ExportLogsServiceRequest JSON body.
+  var logsArr = "["
+  for i, l in records:
+    if i > 0: logsArr.add(",")
+    logsArr.add(jsonEncodeLogRecord(l))
+  logsArr.add("]")
+  let scopeLogs = "{\"scope\":" & jsonEncode(scope) & ",\"logRecords\":" & logsArr & "}"
+  let resourceLogs = "{\"resource\":" & jsonEncode(res) & ",\"scopeLogs\":[" & scopeLogs & "]}"
+  "{\"resourceLogs\":[" & resourceLogs & "]}"

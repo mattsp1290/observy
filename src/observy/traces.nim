@@ -1,5 +1,8 @@
-# Traces signal data model
+# Traces signal data model and OTLP encoding
 import ./anyvalue
+import ./proto
+import ./resource
+import ./json_encode
 
 # opentelemetry-proto v1.10.0 field numbers
 # trace/v1/trace.proto
@@ -64,3 +67,140 @@ type
     droppedLinksCount*:      uint32
     status*:                 SpanStatus
     flags*:                  uint32
+
+# ---------------------------------------------------------------------------
+# Proto encoding
+# ---------------------------------------------------------------------------
+
+proc protoEncodeSpanEvent*(w: var ProtoWriter; e: SpanEvent) =
+  w.writeFixed64(1, e.timeUnixNano)
+  w.writeString(2, e.name)
+  protoEncodeKeyValues(w, 3, e.attributes.pairs)
+  w.writeUint32(4, e.droppedAttributesCount)
+
+proc protoEncodeSpanLink*(w: var ProtoWriter; l: SpanLink) =
+  w.writeBytes(1, l.traceId)
+  w.writeBytes(2, l.spanId)
+  w.writeString(3, l.traceState)
+  protoEncodeKeyValues(w, 4, l.attributes.pairs)
+  w.writeUint32(5, l.droppedAttributesCount)
+  w.writeFixed32(6, l.flags)
+
+proc protoEncodeSpanStatus*(w: var ProtoWriter; st: SpanStatus) =
+  w.writeString(2, st.message)   # field 2 (no field 1 in Status)
+  w.writeInt32(3, int32(st.code))
+
+proc protoEncodeSpan*(w: var ProtoWriter; s: Span) =
+  w.writeBytes(1, s.traceId)
+  w.writeBytes(2, s.spanId)
+  w.writeString(3, s.traceState)
+  # parentSpanId: omit when all-zero (root span); proto3 bytes default is empty
+  var hasParent = false
+  for b in s.parentSpanId:
+    if b != 0: hasParent = true; break
+  if hasParent:
+    w.writeBytes(4, s.parentSpanId)
+  w.writeString(5, s.name)
+  w.writeInt32(6, int32(s.kind))
+  w.writeFixed64(7, s.startTimeUnixNano)
+  w.writeFixed64(8, s.endTimeUnixNano)
+  protoEncodeKeyValues(w, 9, s.attributes.pairs)
+  w.writeUint32(10, s.droppedAttributesCount)
+  for ev in s.events:
+    var evW: ProtoWriter
+    protoEncodeSpanEvent(evW, ev)
+    w.writeEmbedded(11, evW)
+  w.writeUint32(12, s.droppedEventsCount)
+  for lk in s.links:
+    var lkW: ProtoWriter
+    protoEncodeSpanLink(lkW, lk)
+    w.writeEmbedded(13, lkW)
+  w.writeUint32(14, s.droppedLinksCount)
+  var stW: ProtoWriter
+  protoEncodeSpanStatus(stW, s.status)
+  w.writeEmbedded(15, stW)
+  w.writeFixed32(16, s.flags)
+
+# ---------------------------------------------------------------------------
+# JSON encoding
+# ---------------------------------------------------------------------------
+
+proc jsonEncodeSpanEvent(e: SpanEvent): string =
+  result = "{\"timeUnixNano\":" & jsonEncodeUint64(e.timeUnixNano)
+  result.add(",\"name\":" & jsonEscape(e.name))
+  if e.attributes.pairs.len > 0:
+    result.add(",\"attributes\":" & jsonEncodeKVList(e.attributes.pairs))
+  if e.droppedAttributesCount != 0:
+    result.add(",\"droppedAttributesCount\":" & $e.droppedAttributesCount)
+  result.add("}")
+
+proc jsonEncodeSpanLink(l: SpanLink): string =
+  result = "{\"traceId\":\"" & hexEncodeTraceId(l.traceId) & "\""
+  result.add(",\"spanId\":\"" & hexEncodeSpanId(l.spanId) & "\"")
+  if l.traceState.len > 0:
+    result.add(",\"traceState\":" & jsonEscape(l.traceState))
+  if l.attributes.pairs.len > 0:
+    result.add(",\"attributes\":" & jsonEncodeKVList(l.attributes.pairs))
+  if l.droppedAttributesCount != 0:
+    result.add(",\"droppedAttributesCount\":" & $l.droppedAttributesCount)
+  if l.flags != 0:
+    result.add(",\"flags\":" & $l.flags)
+  result.add("}")
+
+proc jsonEncodeSpan*(s: Span): string =
+  result = "{\"traceId\":\"" & hexEncodeTraceId(s.traceId) & "\""
+  result.add(",\"spanId\":\"" & hexEncodeSpanId(s.spanId) & "\"")
+  var hasParent = false
+  for b in s.parentSpanId:
+    if b != 0: hasParent = true; break
+  if hasParent:
+    result.add(",\"parentSpanId\":\"" & hexEncodeSpanId(s.parentSpanId) & "\"")
+  if s.traceState.len > 0:
+    result.add(",\"traceState\":" & jsonEscape(s.traceState))
+  result.add(",\"name\":" & jsonEscape(s.name))
+  if s.kind != skUnspecified:
+    result.add(",\"kind\":" & $int(s.kind))
+  result.add(",\"startTimeUnixNano\":" & jsonEncodeUint64(s.startTimeUnixNano))
+  result.add(",\"endTimeUnixNano\":" & jsonEncodeUint64(s.endTimeUnixNano))
+  if s.attributes.pairs.len > 0:
+    result.add(",\"attributes\":" & jsonEncodeKVList(s.attributes.pairs))
+  if s.droppedAttributesCount != 0:
+    result.add(",\"droppedAttributesCount\":" & $s.droppedAttributesCount)
+  if s.events.len > 0:
+    var evs = "["
+    for i, ev in s.events:
+      if i > 0: evs.add(",")
+      evs.add(jsonEncodeSpanEvent(ev))
+    evs.add("]")
+    result.add(",\"events\":" & evs)
+  if s.droppedEventsCount != 0:
+    result.add(",\"droppedEventsCount\":" & $s.droppedEventsCount)
+  if s.links.len > 0:
+    var lks = "["
+    for i, lk in s.links:
+      if i > 0: lks.add(",")
+      lks.add(jsonEncodeSpanLink(lk))
+    lks.add("]")
+    result.add(",\"links\":" & lks)
+  if s.droppedLinksCount != 0:
+    result.add(",\"droppedLinksCount\":" & $s.droppedLinksCount)
+  if s.status.code != statusUnset or s.status.message.len > 0:
+    result.add(",\"status\":{\"code\":" & $int(s.status.code))
+    if s.status.message.len > 0:
+      result.add(",\"message\":" & jsonEscape(s.status.message))
+    result.add("}")
+  if s.flags != 0:
+    result.add(",\"flags\":" & $s.flags)
+  result.add("}")
+
+proc spanToJson*(res: Resource; scope: InstrumentationScope;
+                 spans: seq[Span]): string =
+  ## Encode spans as an OTLP ExportTraceServiceRequest JSON body.
+  var spansArr = "["
+  for i, s in spans:
+    if i > 0: spansArr.add(",")
+    spansArr.add(jsonEncodeSpan(s))
+  spansArr.add("]")
+  let scopeSpans = "{\"scope\":" & jsonEncode(scope) & ",\"spans\":" & spansArr & "}"
+  let resourceSpans = "{\"resource\":" & jsonEncode(res) & ",\"scopeSpans\":[" & scopeSpans & "]}"
+  "{\"resourceSpans\":[" & resourceSpans & "]}"

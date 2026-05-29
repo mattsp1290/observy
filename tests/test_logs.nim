@@ -1,5 +1,9 @@
 import unittest
+import std/json
+import std/os
 import ../src/observy/anyvalue
+import ../src/observy/proto
+import ../src/observy/resource
 import ../src/observy/traces
 import ../src/observy/logs
 
@@ -104,3 +108,71 @@ suite "Logs data model":
       attributes: initAttributeSet(),
     )
     check rec.eventName == ""
+
+# ---------------------------------------------------------------------------
+# Proto encoding tests
+# ---------------------------------------------------------------------------
+
+proc readBin(path: string): seq[byte] =
+  let s = readFile(path)
+  result = newSeq[byte](s.len)
+  for i, c in s: result[i] = byte(c)
+
+proc makeLogRecord(): LogRecord =
+  ## Constructs the same LogRecord as in tools/gen_fixtures.py (log_record.bin)
+  const
+    TID = [0x4b'u8,0xf9,0x2f,0x35,0x77,0xb3,0x4d,0xa6,
+           0xa3,0xce,0x92,0x9d,0x0e,0x0e,0x47,0x36]
+    SID = [0x00'u8,0xf0,0x67,0xaa,0x0b,0xa9,0x02,0xb7]
+  var attrs = initAttributeSet()
+  attrs.add("user.id",  AnyValue(kind: avString, strVal: "u-99999"))
+  attrs.add("ip",       AnyValue(kind: avString, strVal: "192.168.1.1"))
+  attrs.add("attempt",  AnyValue(kind: avInt,    intVal: 1))
+  LogRecord(
+    timeUnixNano:         1_000_000_000_000_000_000'u64,
+    observedTimeUnixNano: 1_000_000_000_100_000_000'u64,
+    severityNumber:       severityInfo,
+    severityText:         "INFO",
+    body:                 AnyValue(kind: avString, strVal: "user login succeeded"),
+    attributes:           attrs,
+    flags:                1'u32,
+    traceId:              TID,
+    spanId:               SID,
+  )
+
+suite "Logs proto encoding":
+  test "log_record.bin — fixed64 times, fixed32 flags, body AnyValue, attributes":
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, makeLogRecord())
+    check w.buf == readBin("tests/fixtures/proto/log_record.bin")
+
+suite "Logs JSON encoding":
+  test "jsonEncodeLogRecord produces valid JSON with severity and body":
+    let j = parseJson(jsonEncodeLogRecord(makeLogRecord()))
+    check j["timeUnixNano"].kind == JString
+    check j["timeUnixNano"].getStr() == "1000000000000000000"
+    check j["severityNumber"].getInt() == 9    # INFO
+    check j["severityText"].getStr() == "INFO"
+    check j["body"]["stringValue"].getStr() == "user login succeeded"
+
+  test "jsonEncodeLogRecord hex-encodes traceId and spanId":
+    let j = parseJson(jsonEncodeLogRecord(makeLogRecord()))
+    check j["traceId"].getStr() == "4bf92f3577b34da6a3ce929d0e0e4736"
+    check j["traceId"].getStr().len == 32
+    check j["spanId"].getStr() == "00f067aa0ba902b7"
+    check j["spanId"].getStr().len == 16
+
+  test "jsonEncodeLogRecord omits traceId/spanId when all-zero":
+    let rec = LogRecord(body: AnyValue(kind: avString, strVal: "x"),
+                        attributes: initAttributeSet())
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check not j.hasKey("traceId")
+    check not j.hasKey("spanId")
+
+  test "logRecordsToJson produces ExportLogsServiceRequest structure":
+    let j = parseJson(logRecordsToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[makeLogRecord()]))
+    check j.hasKey("resourceLogs")
+    check j["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["severityText"].getStr() == "INFO"
