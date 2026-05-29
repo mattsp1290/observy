@@ -181,3 +181,17 @@ proc record*(e: var OtlpHttpExporter; resource: Resource;
     of otlpJsonHttp:  strToBytes(metricToJson(resource, scope, resolved))
   result = e.sendSignal(SigMetrics, payload)
   e.handle2xx(result)
+
+when defined(observyProfiles):
+  proc record*(e: var OtlpHttpExporter; resource: Resource;
+               scope: InstrumentationScope; profiles: seq[Profile]): ExportResponse =
+    ## Synchronously encode + send profiles as one OTLP request (alpha). Single
+    ## attempt; partial-success surfaced via the warn hook on 2xx. No
+    ## BatchProcessor variant for profiles in v1.0. Sends to the profiles endpoint
+    ## (/v1development/profiles). Requires -d:observyProfiles.
+    let payload =
+      case e.config.protocol
+      of otlpProtoHttp: protoEncodeProfilesRequest(resource, scope, profiles)
+      of otlpJsonHttp:  strToBytes(profileToJson(resource, scope, profiles))
+    result = e.sendSignal(SigProfiles, payload)
+    e.handle2xx(result)
