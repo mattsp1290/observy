@@ -1,0 +1,13 @@
+version: "3.8"
+
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
+      - ./collector-output:/collector-output
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health check
