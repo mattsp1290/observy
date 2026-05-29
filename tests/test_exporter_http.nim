@@ -1,6 +1,5 @@
 import unittest
 import std/net
-import std/os
 import std/strutils
 import std/httpcore
 import ../src/observy/config
@@ -9,22 +8,24 @@ import ../src/observy/exporter_http
 # ---------------------------------------------------------------------------
 # Local TCP mock server
 #
-# A background thread accepts a single connection, reads the full HTTP request
-# (headers + Content-Length-delimited body), captures it, and returns 200 OK.
-# The captured raw request is handed back via a global Channel.
+# A background thread binds to an OS-assigned port (port 0), reports the actual
+# port back over `portChan`, accepts one connection, reads the full HTTP request
+# (headers + Content-Length body), captures it on `reqChan`, and returns 200 OK.
+# Binding before reporting the port removes the bind/connect race entirely — no
+# sleeps, no hardcoded ports (so no CI port collisions).
 # ---------------------------------------------------------------------------
 
 var reqChan: Channel[string]
+var portChan: Channel[int]
 
 proc recvRequest(client: Socket): string =
-  # Read the request line + headers with readLine (Nim sets `line` to the literal
-  # "\r\L" for the blank header-terminator line, NOT ""), then read exactly
-  # Content-Length body bytes. Returns the reconstructed "<headers>\r\n\r\n<body>".
+  # Nim's socket readLine yields the literal "\r\L" for a blank line (not ""),
+  # which is how we detect the header terminator; then read Content-Length body.
   var headers = ""
   while true:
     var line = ""
     client.readLine(line, timeout = 3000)
-    if line == "\r\L" or line.len == 0: break   # blank line ends headers (or EOF)
+    if line == "\r\L" or line.len == 0: break
     headers.add(line & "\r\n")
   var contentLen = 0
   for line in headers.split("\r\n"):
@@ -35,12 +36,15 @@ proc recvRequest(client: Socket): string =
     body = client.recv(contentLen, timeout = 3000)
   headers & "\r\n" & body
 
-proc runMock(port: int) {.thread.} =
+proc runMock() {.thread.} =
   var server = newSocket()
+  var portSent = false
   try:
     server.setSockOpt(OptReuseAddr, true)
-    server.bindAddr(Port(port))
+    server.bindAddr(Port(0))             # OS picks a free port
     server.listen()
+    portChan.send(int(server.getLocalAddr()[1]))
+    portSent = true
     var client: Socket
     server.accept(client)
     let req = recvRequest(client)
@@ -48,21 +52,25 @@ proc runMock(port: int) {.thread.} =
     client.close()
     reqChan.send(req)
   except CatchableError as ex:
+    if not portSent: portChan.send(-1)
     reqChan.send("ERROR: " & ex.msg)
   finally:
     server.close()
 
-proc captureRequest(port: int; body: proc ()): string =
-  ## Start the mock on `port`, run `body` (which performs the export), and
-  ## return the raw HTTP request the server received.
+proc capture(body: proc (port: int)): string =
+  ## Start the mock, wait until it has bound (via portChan — no sleep race),
+  ## run `body(port)` to perform the export, then return the raw request.
   reqChan.open()
-  var t: Thread[int]
-  createThread(t, runMock, port)
-  sleep(150)   # let the server bind + listen before the client connects
-  body()
+  portChan.open()
+  var t: Thread[void]
+  createThread(t, runMock)
+  let port = portChan.recv()
+  doAssert port > 0, "mock failed to bind"
+  body(port)
   joinThread(t)
   result = reqChan.recv()
   reqChan.close()
+  portChan.close()
 
 proc baseConfig(): ExporterConfig =
   result.endpoint = "http://127.0.0.1"
@@ -70,12 +78,11 @@ proc baseConfig(): ExporterConfig =
 
 suite "OtlpHttpExporter sendRequest":
   test "protobuf protocol: correct path, method, and Content-Type":
-    var cfg = baseConfig()
-    let url = "http://127.0.0.1:18801/v1/traces"
-    let payload = @[0x0a'u8, 0x01, 0x62]   # arbitrary proto-ish bytes
-    let req = captureRequest(18801, proc () =
-      var e = newOtlpHttpExporter(cfg)
-      discard e.sendRequest(url, payload, "application/x-protobuf")
+    let payload = @[0x0a'u8, 0x01, 0x62]
+    let req = capture(proc (port: int) =
+      var e = newOtlpHttpExporter(baseConfig())
+      discard e.sendRequest("http://127.0.0.1:" & $port & "/v1/traces",
+                            payload, "application/x-protobuf")
       e.close())
     check req.startsWith("POST /v1/traces ")
     check req.toLowerAscii.contains("content-type: application/x-protobuf")
@@ -83,25 +90,33 @@ suite "OtlpHttpExporter sendRequest":
   test "custom headers are injected on every request":
     var cfg = baseConfig()
     cfg.headers = @[("authorization", "Bearer tok123"), ("x-tenant", "acme")]
-    let url = "http://127.0.0.1:18802/v1/traces"
-    let req = captureRequest(18802, proc () =
+    let req = capture(proc (port: int) =
       var e = newOtlpHttpExporter(cfg)
-      discard e.sendRequest(url, @[0x01'u8, 0x02], "application/x-protobuf")
+      discard e.sendRequest("http://127.0.0.1:" & $port & "/v1/traces",
+                            @[0x01'u8, 0x02], "application/x-protobuf")
       e.close())
     check req.toLowerAscii.contains("authorization: bearer tok123")
     check req.toLowerAscii.contains("x-tenant: acme")
 
-  test "protobuf body bytes are sent verbatim":
+  test "protocol Content-Type wins over a colliding config header":
     var cfg = baseConfig()
-    let url = "http://127.0.0.1:18803/v1/metrics"
-    let payload = @[0xde'u8, 0xad, 0xbe, 0xef, 0x00, 0x7f]
-    let req = captureRequest(18803, proc () =
+    cfg.headers = @[("content-type", "text/plain")]   # must NOT override
+    let req = capture(proc (port: int) =
       var e = newOtlpHttpExporter(cfg)
-      discard e.sendRequest(url, payload, "application/x-protobuf")
+      discard e.sendRequest("http://127.0.0.1:" & $port & "/v1/traces",
+                            @[0x01'u8], "application/x-protobuf")
       e.close())
-    # Body is the last Content-Length bytes after the header terminator.
-    let bodyStart = req.find("\r\n\r\n") + 4
-    let body = req[bodyStart .. ^1]
+    check req.toLowerAscii.contains("content-type: application/x-protobuf")
+    check not req.toLowerAscii.contains("text/plain")
+
+  test "protobuf body bytes (incl. NUL) are sent verbatim":
+    let payload = @[0xde'u8, 0xad, 0xbe, 0xef, 0x00, 0x7f]
+    let req = capture(proc (port: int) =
+      var e = newOtlpHttpExporter(baseConfig())
+      discard e.sendRequest("http://127.0.0.1:" & $port & "/v1/metrics",
+                            payload, "application/x-protobuf")
+      e.close())
+    let body = req[req.find("\r\n\r\n") + 4 .. ^1]
     check body.len == payload.len
     for i, b in payload:
       check byte(body[i]) == b
@@ -109,24 +124,23 @@ suite "OtlpHttpExporter sendRequest":
   test "json protocol body and content-type":
     var cfg = baseConfig()
     cfg.protocol = otlpJsonHttp
-    let url = "http://127.0.0.1:18804/v1/logs"
     let jsonStr = "{\"resourceLogs\":[]}"
     var payload = newSeq[byte](jsonStr.len)
     for i, c in jsonStr: payload[i] = byte(c)
-    let req = captureRequest(18804, proc () =
+    let req = capture(proc (port: int) =
       var e = newOtlpHttpExporter(cfg)
-      discard e.sendRequest(url, payload, defaultContentType(cfg.protocol))
+      discard e.sendRequest("http://127.0.0.1:" & $port & "/v1/logs",
+                            payload, defaultContentType(cfg.protocol))
       e.close())
     check req.toLowerAscii.contains("content-type: application/json")
-    let bodyStart = req.find("\r\n\r\n") + 4
-    check req[bodyStart .. ^1] == jsonStr
+    check req[req.find("\r\n\r\n") + 4 .. ^1] == jsonStr
 
 suite "OtlpHttpExporter sendSignal":
   test "sendSignal uses the configured signal endpoint and protocol content-type":
-    var cfg = baseConfig()
-    cfg.protocol = otlpProtoHttp
-    cfg.signalEndpoints[SigMetrics] = "http://127.0.0.1:18805/v1/metrics"
-    let req = captureRequest(18805, proc () =
+    let req = capture(proc (port: int) =
+      var cfg = baseConfig()
+      cfg.protocol = otlpProtoHttp
+      cfg.signalEndpoints[SigMetrics] = "http://127.0.0.1:" & $port & "/v1/metrics"
       var e = newOtlpHttpExporter(cfg)
       discard e.sendSignal(SigMetrics, @[0x01'u8])
       e.close())
@@ -134,15 +148,25 @@ suite "OtlpHttpExporter sendSignal":
     check req.toLowerAscii.contains("content-type: application/x-protobuf")
 
   test "sendSignal with json protocol picks application/json":
-    var cfg = baseConfig()
-    cfg.protocol = otlpJsonHttp
-    cfg.signalEndpoints[SigLogs] = "http://127.0.0.1:18806/v1/logs"
-    let req = captureRequest(18806, proc () =
+    let req = capture(proc (port: int) =
+      var cfg = baseConfig()
+      cfg.protocol = otlpJsonHttp
+      cfg.signalEndpoints[SigLogs] = "http://127.0.0.1:" & $port & "/v1/logs"
       var e = newOtlpHttpExporter(cfg)
       discard e.sendSignal(SigLogs, @[byte('{'), byte('}')])
       e.close())
     check req.startsWith("POST /v1/logs ")
     check req.toLowerAscii.contains("content-type: application/json")
+
+suite "OtlpHttpExporter response":
+  test "returns 200 with response metadata":
+    var resp: ExportResponse
+    discard capture(proc (port: int) =
+      var e = newOtlpHttpExporter(baseConfig())
+      resp = e.sendRequest("http://127.0.0.1:" & $port & "/v1/traces",
+                           @[0x01'u8], "application/x-protobuf")
+      e.close())
+    check resp.code == Http200
 
 suite "defaultContentType":
   test "protobuf maps to application/x-protobuf":
@@ -150,18 +174,22 @@ suite "defaultContentType":
   test "json maps to application/json":
     check defaultContentType(otlpJsonHttp) == "application/json"
 
-suite "OtlpHttpExporter response":
-  test "returns 200 from the mock server":
+suite "OtlpHttpExporter lifecycle and validation":
+  test "gzip compression fails fast at construction":
     var cfg = baseConfig()
-    let url = "http://127.0.0.1:18807/v1/traces"
-    reqChan.open()
-    var t: Thread[int]
-    createThread(t, runMock, 18807)
-    sleep(150)
-    var e = newOtlpHttpExporter(cfg)
-    let code = e.sendRequest(url, @[0x01'u8], "application/x-protobuf")
+    cfg.compression = compGzip
+    expect ValueError:
+      discard newOtlpHttpExporter(cfg)
+
+  test "empty URL raises":
+    var e = newOtlpHttpExporter(baseConfig())
+    expect ValueError:
+      discard e.sendRequest("", @[0x01'u8], "application/x-protobuf")
     e.close()
-    joinThread(t)
-    discard reqChan.recv()
-    reqChan.close()
-    check code == Http200
+
+  test "send after close raises":
+    var e = newOtlpHttpExporter(baseConfig())
+    e.close()
+    expect ValueError:
+      discard e.sendRequest("http://127.0.0.1:1/v1/traces", @[0x01'u8],
+                            "application/x-protobuf")

@@ -39,6 +39,30 @@ suite "loadFromEnv defaults":
     let cfg = loadFromEnv()
     check cfg.maxRetryElapsed == 300
 
+  test "default timeoutMs is 10000 (OTLP spec)":
+    delEnv("OTEL_EXPORTER_OTLP_TIMEOUT")
+    let cfg = loadFromEnv()
+    check cfg.timeoutMs == 10000
+
+suite "OTEL_EXPORTER_OTLP_TIMEOUT":
+  test "explicit timeout is parsed":
+    putEnv("OTEL_EXPORTER_OTLP_TIMEOUT", "5000")
+    let cfg = loadFromEnv()
+    delEnv("OTEL_EXPORTER_OTLP_TIMEOUT")
+    check cfg.timeoutMs == 5000
+
+  test "non-numeric timeout falls back to default":
+    putEnv("OTEL_EXPORTER_OTLP_TIMEOUT", "abc")
+    let cfg = loadFromEnv()
+    delEnv("OTEL_EXPORTER_OTLP_TIMEOUT")
+    check cfg.timeoutMs == 10000
+
+  test "non-positive timeout falls back to default":
+    putEnv("OTEL_EXPORTER_OTLP_TIMEOUT", "0")
+    let cfg = loadFromEnv()
+    delEnv("OTEL_EXPORTER_OTLP_TIMEOUT")
+    check cfg.timeoutMs == 10000
+
 suite "OTEL_EXPORTER_OTLP_ENDPOINT":
   test "base endpoint is stored and paths are appended":
     putEnv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://collector:4318")
