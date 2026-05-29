@@ -30,15 +30,22 @@ type
     flushIntervalMs*: int   ## flush a non-empty batch after this many ms idle
     maxQueueSize*:    int   ## bounded channel capacity (0 = unbounded)
 
+  BatchErrorProc* = proc (msg: string) {.gcsafe.}
+
   BatchProcessor*[T] = object
-    ## Single-owner: holds a worker thread, channel and stop flag. Never copy it;
-    ## pass by `var` and keep it in a stable location until stop() returns.
+    ## Single-owner: holds a worker thread, channel and stop flag. The embedded
+    ## Channel/Thread/Atomic make it non-copyable and non-movable (the compiler
+    ## enforces this), so the worker's `addr p` stays valid for its whole life.
+    ## Backpressure policy: submit() BLOCKS the producing thread when the bounded
+    ## queue (maxQueueSize) is full — no data is dropped. Treat one processor as
+    ## single-producer (or guard submit/stop with your own sync).
     config*:        BatchConfig
     chan:           Channel[T]
     thread:         Thread[ptr BatchProcessor[T]]
     onBatch:        proc (items: seq[T]) {.gcsafe.}
+    onError:        BatchErrorProc        ## called if a flush raises; nil → stderr
     stopRequested:  Atomic[bool]
-    running:        bool
+    started:        Atomic[bool]
 
 proc defaultBatchConfig*(): BatchConfig =
   BatchConfig(maxSize: 512, flushIntervalMs: 5000, maxQueueSize: 2048)
@@ -51,18 +58,30 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
   var lastFlush = monoMs()
   template flush() =
     if batch.len > 0:
-      p.onBatch(batch)
+      # A flush hitting a network error / 5xx is normal operation for an
+      # exporter; an exception escaping the thread proc would abort the whole
+      # process, so it is caught here. The batch is dropped after reporting.
+      try:
+        p.onBatch(batch)
+      except CatchableError as ex:
+        if p.onError != nil:
+          p.onError("batch flush failed: " & ex.msg)
+        else:
+          {.cast(gcsafe).}:
+            stderr.writeLine("observy batch: flush failed: " & ex.msg)
       batch.setLen(0)
       lastFlush = monoMs()
   while true:
+    # Check stop every iteration (not only when idle) so a flooding producer
+    # can't starve the stop signal and hang stop()/joinThread.
+    if p.stopRequested.load(moAcquire):
+      break
     let (ok, item) = p.chan.tryRecv()
     if ok:
       batch.add(item)
       if batch.len >= p.config.maxSize:
         flush()
     else:
-      if p.stopRequested.load(moAcquire):
-        break
       if batch.len > 0 and (monoMs() - lastFlush) >= p.config.flushIntervalMs:
         flush()
       sleep(1)   # idle tick; avoid busy-spin
@@ -76,13 +95,17 @@ proc worker[T](p: ptr BatchProcessor[T]) {.thread.} =
   flush()
 
 proc start*[T](p: var BatchProcessor[T];
-               onBatch: proc (items: seq[T]) {.gcsafe.}) =
-  ## Open the channel and spawn the worker thread.
+               onBatch: proc (items: seq[T]) {.gcsafe.};
+               onError: BatchErrorProc = nil) =
+  ## Open the channel and spawn the worker thread. `onError` (optional) is called
+  ## when a flush raises; if nil, failures are written to stderr.
   doAssert onBatch != nil, "onBatch callback is required"
+  doAssert not p.started.load(moAcquire), "BatchProcessor already started"
   p.onBatch = onBatch
+  p.onError = onError
   p.stopRequested.store(false, moRelease)
   p.chan.open(p.config.maxQueueSize)
-  p.running = true
+  p.started.store(true, moRelease)
   createThread(p.thread, worker[T], addr p)
 
 proc newBatchProcessor*[T](config = defaultBatchConfig()): BatchProcessor[T] =
@@ -92,15 +115,20 @@ proc newBatchProcessor*[T](config = defaultBatchConfig()): BatchProcessor[T] =
   result.config = config
 
 proc submit*[T](p: var BatchProcessor[T]; item: sink T) =
-  ## Hand an item to the worker. isolate() asserts at compile time that `item`
-  ## has no outside references before it crosses the thread boundary.
+  ## Hand an item to the worker. Raises ValueError if the processor isn't running
+  ## (before start() or after stop()) rather than crashing on a closed channel.
+  ## BLOCKS when the bounded queue is full (backpressure, no drop).
+  ## isolate() asserts at compile time that `item` has no outside references
+  ## before it crosses the thread boundary.
+  if not p.started.load(moAcquire):
+    raise newException(ValueError, "submit() called before start() or after stop()")
   var iso = isolate(item)
   p.chan.send(extract(iso))
 
 proc stop*[T](p: var BatchProcessor[T]) =
   ## Request stop, wait for the worker to drain + final-flush, then close.
-  if not p.running: return
+  if not p.started.load(moAcquire): return
+  p.started.store(false, moRelease)   # reject further submit() before close
   p.stopRequested.store(true, moRelease)
   joinThread(p.thread)
   p.chan.close()
-  p.running = false

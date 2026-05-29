@@ -1,5 +1,7 @@
 import unittest
 import std/os
+import std/atomics
+import std/strutils
 import ../src/observy/batch
 
 type Item = object
@@ -24,20 +26,20 @@ proc sum(s: seq[int]): int =
 
 suite "BatchProcessor — maxSize batching":
   test "exact multiples flush into equal batches":
+    # Timing-independent: 9 items / maxSize 3 is an exact multiple, and both the
+    # main loop and the stop-drain flush at maxSize, so the result is [3,3,3]
+    # regardless of how far the worker got before stop().
     sizeChan.open()
     var p = newBatchProcessor[Item](
       BatchConfig(maxSize: 3, flushIntervalMs: 10_000, maxQueueSize: 100))
     p.start(recordBatch)
     for i in 0 ..< 9:
       p.submit(Item(id: i, name: "n" & $i))
-    sleep(100)              # let the worker consume + flush all 3 maxSize batches
-    let mid = drainSizes()
-    p.stop()
-    let rest = drainSizes()
+    p.stop()                # drains + flushes everything
+    let sizes = drainSizes()
     sizeChan.close()
-    check sum(mid) + sum(rest) == 9      # every item accounted for
-    check mid == @[3, 3, 3]              # three full batches before stop
-    check rest.len == 0                  # nothing left to flush
+    check sizes == @[3, 3, 3]
+    check sum(sizes) == 9
 
   test "remainder is flushed on stop":
     sizeChan.open()
@@ -114,3 +116,59 @@ suite "BatchProcessor — payload integrity across the thread boundary":
     sizeChan.close()
     check "hello" in names
     check "world" in names
+
+suite "BatchProcessor — lifecycle guards and error isolation":
+  test "a raising onBatch does not kill the worker; later batches still flush":
+    sizeChan.open()
+    var errs: Channel[string]
+    errs.open()
+    var flushNo: Atomic[int]
+    proc flaky(items: seq[Item]) {.gcsafe.} =
+      {.cast(gcsafe).}:
+        let n = flushNo.fetchAdd(1)
+        if n == 0:
+          raise newException(ValueError, "boom")   # first flush fails
+        sizeChan.send(items.len)                    # subsequent flushes succeed
+    proc onErr(msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: errs.send(msg)
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 2, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(flaky, onErr)
+    for i in 0 ..< 4:       # 2 batches of 2: first raises, second records
+      p.submit(Item(id: i, name: ""))
+    p.stop()
+    let sizes = drainSizes()
+    var errMsgs: seq[string]
+    while true:
+      let (ok, m) = errs.tryRecv()
+      if not ok: break
+      errMsgs.add(m)
+    errs.close(); sizeChan.close()
+    check errMsgs.len == 1               # the failed flush was reported, not fatal
+    check errMsgs[0].contains("boom")
+    check sizes == @[2]                  # the second batch still flushed
+
+  test "submit before start raises ValueError":
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    expect ValueError:
+      p.submit(Item(id: 1, name: "x"))
+
+  test "submit after stop raises ValueError (no crash)":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.stop()
+    expect ValueError:
+      p.submit(Item(id: 1, name: "x"))
+    discard drainSizes()
+    sizeChan.close()
+
+  test "stop is idempotent":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](defaultBatchConfig())
+    p.start(recordBatch)
+    p.stop()
+    p.stop()                # second stop is a no-op, does not crash
+    discard drainSizes()
+    sizeChan.close()
+    check true
