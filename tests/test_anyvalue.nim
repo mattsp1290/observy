@@ -104,3 +104,71 @@ suite "UTF-8 safe truncation":
     a.add("k", AnyValue(kind: avString, strVal: s))
     # maxValueLen=3: 'a'(1) + '€'(3) = 4 > 3, so only 'a' fits
     check a.pairs[0].value.strVal == "a"
+
+  test "4-byte UTF-8 char not split":
+    # U+1F600 GRINNING FACE is 4 bytes: 0xF0 0x9F 0x98 0x80
+    let s = "\xF0\x9F\x98\x80abc"  # 7 bytes total
+    var a = initAttributeSet(maxValueLen = 5)
+    a.add("k", AnyValue(kind: avString, strVal: s))
+    # 4-byte emoji fits in 5 bytes, then 'a' => 5 bytes total
+    check a.pairs[0].value.strVal.len == 5
+
+  test "maxValueLen = 0 truncates to empty":
+    var a = initAttributeSet(maxValueLen = 0)
+    a.add("k", AnyValue(kind: avString, strVal: "hello"))
+    check a.pairs[0].value.strVal == ""
+
+  test "negative maxValueLen clamped to 0":
+    var a = initAttributeSet(maxValueLen = -5)
+    check a.maxValueLen == 0
+    a.add("k", AnyValue(kind: avString, strVal: "hello"))
+    check a.pairs[0].value.strVal == ""
+
+  test "negative maxCount clamped to 0":
+    var a = initAttributeSet(maxCount = -1)
+    check a.maxCount == 0
+    a.add("k", AnyValue(kind: avInt, intVal: 1))
+    check a.pairs.len == 0
+
+  test "malformed UTF-8 stray continuation byte stopped before":
+    # 0x80 is a stray continuation byte; truncation window includes it
+    let s = "a\x80bcde"  # 6 bytes, limit=4 requires truncation; stray byte at pos 1
+    var a = initAttributeSet(maxValueLen = 4)
+    a.add("k", AnyValue(kind: avString, strVal: s))
+    # stops before stray continuation byte at pos 1
+    check a.pairs[0].value.strVal == "a"
+
+  test "malformed UTF-8 invalid lead byte stopped before":
+    # 0xFF is an invalid lead byte; truncation window includes it
+    let s = "a\xFFbcde"  # 6 bytes, limit=4; invalid lead at pos 1
+    var a = initAttributeSet(maxValueLen = 4)
+    a.add("k", AnyValue(kind: avString, strVal: s))
+    # stops before invalid lead byte at pos 1
+    check a.pairs[0].value.strVal == "a"
+
+suite "recursive truncation":
+  test "avArray nested strings truncated":
+    var a = initAttributeSet(maxValueLen = 3)
+    let v = AnyValue(kind: avArray, arrayVal: @[
+      AnyValue(kind: avString, strVal: "hello"),
+      AnyValue(kind: avString, strVal: "world"),
+    ])
+    a.add("k", v)
+    check a.pairs[0].value.arrayVal[0].strVal == "hel"
+    check a.pairs[0].value.arrayVal[1].strVal == "wor"
+
+  test "avKvList nested strings truncated":
+    var a = initAttributeSet(maxValueLen = 2)
+    let v = AnyValue(kind: avKvList, kvlistVal: @[
+      KeyValue(key: "x", value: AnyValue(kind: avString, strVal: "abcde")),
+    ])
+    a.add("k", v)
+    check a.pairs[0].value.kvlistVal[0].value.strVal == "ab"
+
+  test "deeply nested non-string values unchanged":
+    var a = initAttributeSet(maxValueLen = 1)
+    let v = AnyValue(kind: avArray, arrayVal: @[
+      AnyValue(kind: avInt, intVal: 12345'i64),
+    ])
+    a.add("k", v)
+    check a.pairs[0].value.arrayVal[0].intVal == 12345'i64
