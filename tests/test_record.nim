@@ -245,3 +245,49 @@ suite "record() surfaces partial-success and JSON path":
     check msgs.len == 1
     check msgs[0].contains("rejected=5")
     check msgs[0].contains("quota exceeded")
+
+suite "BatchProcessor — record() onBatch wires handleResponse (partial-success)":
+  test "BatchProcessor onBatch using record() surfaces partial-success warning":
+    # Verify the async BatchProcessor path: when onBatch calls record(exporter, ...),
+    # handleResponse is called on 2xx and partial-success rejections are warned.
+    pbodyChan.open(); pportChan.open()
+    var warns: Channel[string]
+    warns.open()
+    var t: Thread[void]
+    createThread(t, partialMock)
+    let port = pportChan.recv()
+    doAssert port > 0
+
+    var cfg: ExporterConfig
+    cfg.protocol = otlpProtoHttp
+    cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+    var exporter = newOtlpExporter(cfg)
+    exporter.warn = proc (msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: warns.send(msg)
+
+    let res   = sampleResource()
+    let scope = sampleScope()
+
+    var p = newBatchProcessor[Span](BatchConfig(
+      maxSize: 10, flushIntervalMs: 10_000, maxQueueSize: 100))
+    p.start(proc (spans: seq[Span]) {.gcsafe.} =
+      # record() calls handle2xx which decodes partial-success and warns.
+      {.cast(gcsafe).}: discard exporter.record(res, scope, spans))
+
+    p.submit(sampleSpan())
+    p.forceFlush()
+    p.shutdown()
+    exporter.close()
+
+    joinThread(t)
+    discard pbodyChan.recv()
+    pbodyChan.close(); pportChan.close()
+
+    var msgs: seq[string]
+    while true:
+      let (ok, m) = warns.tryRecv()
+      if not ok: break
+      msgs.add(m)
+    warns.close()
+    check msgs.len == 1
+    check msgs[0].contains("rejected=5")
