@@ -128,32 +128,47 @@ proc record*(p: var BatchProcessor[Metric]; metric: Metric) =
 
 {.pop.}
 
+proc handle2xx(e: var OtlpHttpExporter; resp: ExportResponse) =
+  ## On a 2xx, decode partial-success and warn on any rejection (never silently
+  ## drop it). This is the synchronous emit path's wiring of handleResponse
+  ## (observy-5gl). Non-2xx responses are returned as-is for the caller to act on.
+  if int(resp.code) in 200 .. 299:
+    discard e.handleResponse(resp)
+
 proc record*(e: var OtlpHttpExporter; resource: Resource;
              scope: InstrumentationScope; spans: seq[Span]): ExportResponse =
   ## Synchronously encode + send spans as one OTLP request (protocol-selected:
-  ## protobuf or JSON). Returns the HTTP ExportResponse.
+  ## protobuf or JSON). SINGLE attempt — no automatic retry (wrap with your own
+  ## policy or use retryWithBackoff). On a 2xx, partial-success is decoded and any
+  ## rejection is surfaced via the exporter's warn hook. Returns the ExportResponse
+  ## (check `.code`). Raises on a transport-level failure (connection/timeout/TLS).
   let payload =
     case e.config.protocol
     of otlpProtoHttp: protoEncodeTraceRequest(resource, scope, spans)
     of otlpJsonHttp:  strToBytes(spanToJson(resource, scope, spans))
-  e.sendSignal(SigTraces, payload)
+  result = e.sendSignal(SigTraces, payload)
+  e.handle2xx(result)
 
 proc record*(e: var OtlpHttpExporter; resource: Resource;
              scope: InstrumentationScope; logs: seq[LogRecord]): ExportResponse =
-  ## Synchronously encode + send log records as one OTLP request.
+  ## Synchronously encode + send log records as one OTLP request. Single attempt;
+  ## partial-success surfaced via the warn hook on 2xx. See the spans overload.
   let payload =
     case e.config.protocol
     of otlpProtoHttp: protoEncodeLogsRequest(resource, scope, logs)
     of otlpJsonHttp:  strToBytes(logRecordsToJson(resource, scope, logs))
-  e.sendSignal(SigLogs, payload)
+  result = e.sendSignal(SigLogs, payload)
+  e.handle2xx(result)
 
 proc record*(e: var OtlpHttpExporter; resource: Resource;
              scope: InstrumentationScope; metrics: seq[Metric]): ExportResponse =
-  ## Synchronously encode + send metrics as one OTLP request.
+  ## Synchronously encode + send metrics as one OTLP request. Single attempt;
+  ## partial-success surfaced via the warn hook on 2xx. See the spans overload.
   ## (Aggregation-temporality selection — observy-3qq — will be applied here once
   ## implemented; metrics are currently encoded with their data points as given.)
   let payload =
     case e.config.protocol
     of otlpProtoHttp: protoEncodeMetricsRequest(resource, scope, metrics)
     of otlpJsonHttp:  strToBytes(metricToJson(resource, scope, metrics))
-  e.sendSignal(SigMetrics, payload)
+  result = e.sendSignal(SigMetrics, payload)
+  e.handle2xx(result)

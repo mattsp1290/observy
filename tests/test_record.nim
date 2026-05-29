@@ -154,3 +154,94 @@ suite "record() on the exporter (synchronous send via mock)":
     var bodyBytes = newSeq[byte](body.len)
     for i, c in body: bodyBytes[i] = byte(c)
     check bodyBytes == hexToBytes(TRACE_REQ)
+
+# Mock that returns 200 with a protobuf partial_success body (rejected_spans=5,
+# "quota exceeded") and the x-protobuf content-type, to exercise record()'s
+# partial-success handling.
+var pbodyChan: Channel[string]
+var pportChan: Channel[int]
+
+proc partialMock() {.thread.} =
+  var server = newSocket()
+  var portSent = false
+  try:
+    server.setSockOpt(OptReuseAddr, true)
+    server.bindAddr(Port(0))
+    server.listen()
+    pportChan.send(int(server.getLocalAddr()[1]))
+    portSent = true
+    var client: Socket
+    server.accept(client)
+    var headers = ""
+    while true:
+      var line = ""
+      client.readLine(line, timeout = 3000)
+      if line == "\r\L" or line.len == 0: break
+      headers.add(line & "\r\n")
+    var clen = 0
+    for ln in headers.split("\r\n"):
+      if ln.toLowerAscii.startsWith("content-length:"):
+        clen = parseInt(ln.split(":", 1)[1].strip())
+    if clen > 0: discard client.recv(clen, timeout = 3000)
+    # partial-success proto body
+    let body = hexToBytes("0a120805120e71756f7461206578636565646564")
+    var b = ""
+    for x in body: b.add(char(x))
+    client.send("HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: " &
+                $b.len & "\r\n\r\n" & b)
+    client.close()
+    pbodyChan.send("ok")
+  except CatchableError as ex:
+    if not portSent: pportChan.send(-1)
+    pbodyChan.send("ERR:" & ex.msg)
+  finally:
+    server.close()
+
+suite "record() surfaces partial-success and JSON path":
+  test "JSON protocol sends an OTLP-JSON body":
+    bodyChan.open(); portChan2.open()
+    var t: Thread[void]
+    createThread(t, recordMock)
+    let port = portChan2.recv()
+    doAssert port > 0
+    var cfg: ExporterConfig
+    cfg.protocol = otlpJsonHttp
+    cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+    var e = newOtlpExporter(cfg)
+    let resp = e.record(sampleResource(), sampleScope(), @[sampleSpan()])
+    e.close()
+    joinThread(t)
+    let body = bodyChan.recv()
+    bodyChan.close(); portChan2.close()
+    check resp.code == Http200
+    check body.startsWith("{\"resourceSpans\":")
+
+  test "200 with partial_success warns via the exporter warn hook":
+    pbodyChan.open(); pportChan.open()
+    var warns: Channel[string]
+    warns.open()
+    var t: Thread[void]
+    createThread(t, partialMock)
+    let port = pportChan.recv()
+    doAssert port > 0
+    var cfg: ExporterConfig
+    cfg.protocol = otlpProtoHttp
+    cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+    var e = newOtlpExporter(cfg)
+    e.warn = proc (msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: warns.send(msg)
+    let resp = e.record(sampleResource(), sampleScope(), @[sampleSpan()])
+    e.close()
+    joinThread(t)
+    discard pbodyChan.recv()
+    pbodyChan.close(); pportChan.close()
+    check resp.code == Http200
+    var msgs: seq[string]
+    while true:
+      let (ok, m) = warns.tryRecv()
+      if not ok: break
+      msgs.add(m)
+    warns.close()
+    check msgs.len == 1
+    check msgs[0].contains("rejected=5")
+    check msgs[0].contains("quota exceeded")
