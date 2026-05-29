@@ -1,6 +1,10 @@
+*.o
+*.a
 nimcache/
 nimblecache/
+nimbledeps/
 htmldocs/
+collector-output/*.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/
