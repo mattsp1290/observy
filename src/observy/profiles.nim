@@ -1,8 +1,20 @@
 # Profiles signal data model, proto encoding, and JSON encoding (alpha).
 # Gate ALL code behind -d:observyProfiles — this signal is experimental and
 # the proto path (/v1development/profiles) is not stable.
+#
+# SCHEMA PINNING: this encoder targets the opentelemetry-proto profiles ALPHA
+# schema as described in beads observy-45b/w7a, which nests
+#   ExportProfilesServiceRequest > ResourceProfiles > ScopeProfiles >
+#   ProfileContainer{profile}. Newer proto revisions have reshaped this (the
+#   ProfileContainer wrapper was removed at one point). Because the signal is
+#   alpha and unstable, treat this as best-effort and re-verify against the
+#   collector's pinned proto before relying on it in production.
+#
+# JSON COVERAGE: profileToJson emits a documented SUBSET (sampleType, sample,
+# stringTable, timeNanos, durationNanos) sufficient for the alpha smoke path.
+# The proto encoder (encodeProfile) emits the full message. This asymmetry is
+# intentional for alpha; bring JSON to parity before GA.
 when defined(observyProfiles):
-  import ./anyvalue
   import ./proto
   import ./resource
   import ./json_encode
@@ -86,6 +98,9 @@ when defined(observyProfiles):
       mapping*:           seq[Mapping]
       location*:          seq[Location]
       function*:          seq[Function]
+      ## Per the profiles spec, stringTable[0] MUST be the empty string ""; all
+      ## other string fields are int64 indices into this table. Callers are
+      ## responsible for this convention (not enforced here).
       stringTable*:       seq[string]
       dropFrames*:        int64
       keepFrames*:        int64
@@ -145,15 +160,19 @@ when defined(observyProfiles):
     w.writeInt64(5, f.startLine)
 
   proc encodeSample(w: var ProtoWriter; s: Sample) =
-    for idx in s.locationIndex: w.writeUint64(1, idx)
-    for v in s.value:           w.writeInt64(2, v)
+    # Repeated scalar fields use PACKED encoding. A per-element loop with the
+    # zero-suppressing writeUint64/writeInt64/writeUint32 would silently drop any
+    # zero-valued element (e.g. locationIndex 0 is a valid location-table index),
+    # corrupting array length. Packed writers emit every element verbatim.
+    w.writePackedUint64(1, s.locationIndex)
+    w.writePackedInt64(2, s.value)
     for l in s.label:
       var lw: ProtoWriter
       encodeLabel(lw, l)
       w.writeEmbedded(3, lw)
-    for a in s.attributes:      w.writeUint32(4, a)
+    w.writePackedUint32(4, s.attributes)
     w.writeUint64(5, s.link)
-    for ts in s.timestampsUnixNano: w.writeUint64(6, ts)
+    w.writePackedUint64(6, s.timestampsUnixNano)
 
   proc encodeProfile*(w: var ProtoWriter; p: Profile) =
     ## Encode a Profile message per the opentelemetry-proto-profile alpha schema.
@@ -175,26 +194,24 @@ when defined(observyProfiles):
     w.writeInt64(10, p.durationNanos)
     w.writeInt64(11, p.period)
     var ptW: ProtoWriter; encodeValueType(ptW, p.periodType); w.writeEmbedded(12, ptW)
-    for c in p.comment: w.writeInt64(13, c)
+    w.writePackedInt64(13, p.comment)   # packed: don't drop zero-valued string-table indices
     w.writeInt64(14, p.defaultSampleType)
 
   proc protoEncodeProfilesRequest*(res: Resource; scope: InstrumentationScope;
                                     profiles: seq[Profile]): seq[byte] =
     ## Encode as ExportProfilesServiceRequest proto. HTTP path: /v1development/profiles.
-    var profilesArr: ProtoWriter
+    ## Nesting: ExportProfilesServiceRequest{1=ResourceProfiles{1=resource,
+    ## 2=ScopeProfiles{1=scope, 2=ProfileContainer{1=profile}}}}.
+    var scopeProfiles: ProtoWriter
+    scopeProfiles.writeBytes(1, protoEncode(scope))   # scope (empty → omitted)
     for p in profiles:
       var pw: ProtoWriter
       encodeProfile(pw, p)
       var container: ProtoWriter
       container.writeEmbedded(1, pw)
-      profilesArr.writeEmbedded(2, container)
-    var scopeProfiles: ProtoWriter
-    let scopeBytes = protoEncode(scope)
-    scopeProfiles.writeBytes(1, scopeBytes)
-    for b in profilesArr.buf: scopeProfiles.buf.add(b)
+      scopeProfiles.writeEmbedded(2, container)       # ProfileContainer
     var resProfiles: ProtoWriter
-    let resBytes = protoEncode(res)
-    resProfiles.writeBytes(1, resBytes)
+    resProfiles.writeBytes(1, protoEncode(res))        # resource (empty → omitted)
     resProfiles.writeEmbedded(2, scopeProfiles)
     var req: ProtoWriter
     req.writeEmbedded(1, resProfiles)
@@ -204,21 +221,24 @@ when defined(observyProfiles):
   # JSON encoding
   # ---------------------------------------------------------------------------
 
+  # proto3-JSON: int64/uint64 fields serialize as strings (the codebase's
+  # jsonEncodeInt64/jsonEncodeUint64 helpers quote them). All ValueType/Label
+  # fields and Sample.locationIndex are 64-bit, so they are stringified.
   proc jsonEncodeValueType(vt: ValueType): string =
-    "{\"type\":" & $vt.typ & ",\"unit\":" & $vt.unit & "}"
+    "{\"type\":" & jsonEncodeInt64(vt.typ) & ",\"unit\":" & jsonEncodeInt64(vt.unit) & "}"
 
   proc jsonEncodeLabel(l: Label): string =
-    result = "{\"key\":" & $l.key
-    if l.str  != 0: result.add(",\"str\":"     & $l.str)
+    result = "{\"key\":" & jsonEncodeInt64(l.key)
+    if l.str  != 0: result.add(",\"str\":"     & jsonEncodeInt64(l.str))
     if l.num  != 0: result.add(",\"num\":"     & jsonEncodeInt64(l.num))
-    if l.numUnit != 0: result.add(",\"numUnit\":" & $l.numUnit)
+    if l.numUnit != 0: result.add(",\"numUnit\":" & jsonEncodeInt64(l.numUnit))
     result.add("}")
 
   proc jsonEncodeSample(s: Sample): string =
     result = "{\"locationIndex\":["
     for i, idx in s.locationIndex:
       if i > 0: result.add(",")
-      result.add($idx)
+      result.add(jsonEncodeUint64(idx))
     result.add("],\"value\":[")
     for i, v in s.value:
       if i > 0: result.add(",")

@@ -7,7 +7,7 @@ import ../src/observy/resource
 when defined(observyProfiles):
   import ../src/observy/profiles
 
-  proc samplePrtofile(): Profile =
+  proc sampleProfile(): Profile =
     Profile(
       sampleType: @[ValueType(typ: 1, unit: 2)],
       sample: @[Sample(
@@ -28,7 +28,7 @@ when defined(observyProfiles):
 
   suite "Profiles data model (alpha)":
     test "Profile construction holds all fields":
-      let p = samplePrtofile()
+      let p = sampleProfile()
       check p.sampleType.len == 1
       check p.sample.len == 1
       check p.sample[0].value == @[100'i64, 200'i64]
@@ -41,28 +41,60 @@ when defined(observyProfiles):
   suite "Profiles proto encoding (alpha)":
     test "encodeProfile produces non-empty binary":
       var w: ProtoWriter
-      encodeProfile(w, samplePrtofile())
+      encodeProfile(w, sampleProfile())
       check w.buf.len > 0
 
     test "protoEncodeProfilesRequest wraps in ExportProfilesServiceRequest":
       let res = Resource(attributes: initAttributeSet())
       let scope = InstrumentationScope(attributes: initAttributeSet())
-      let bytes = protoEncodeProfilesRequest(res, scope, @[samplePrtofile()])
+      let bytes = protoEncodeProfilesRequest(res, scope, @[sampleProfile()])
       check bytes.len > 0
       # Top-level field 1 = ResourceProfiles, wire type 2 (length-delimited) → tag 0x0a
       check bytes[0] == 0x0a'u8
 
-    test "empty profile still encodes (period_type present)":
+    test "packed locationIndex round-trips a zero-valued element":
+      # Regression: a per-element zero-suppressing writer would drop the 0 here,
+      # decoding @[0, 1] back to @[1]. Packed encoding must preserve both.
+      # Encode via the public encodeProfile, then decode Profile.sample (field 2,
+      # embedded) → Sample.locationIndex (field 1, packed varints).
+      let p = Profile(sample: @[Sample(
+        locationIndex: @[0'u64, 1'u64], value: @[5'i64])])
       var w: ProtoWriter
-      encodeProfile(w, Profile(stringTable: @[""]))
-      # string_table[0] = "" suppressed (empty), period_type embedded message present
-      check w.buf.len >= 0   # may be empty if all fields default; must not crash
+      encodeProfile(w, p)
+      var r = ProtoReader(data: w.buf)
+      var sampleBytes: seq[byte]
+      while r.pos < w.buf.len:
+        let (fn, wt) = r.readTag()
+        if fn == 2'u32:
+          sampleBytes = r.readBytes()
+        else:
+          r.skipField(wt)
+      check sampleBytes.len > 0
+      var sr = ProtoReader(data: sampleBytes)
+      var decoded: seq[uint64]
+      while sr.pos < sampleBytes.len:
+        let (fn, wt) = sr.readTag()
+        if fn == 1'u32:                 # locationIndex (packed → length-delimited)
+          let packed = sr.readBytes()
+          var pr = ProtoReader(data: packed)
+          while pr.pos < packed.len:
+            decoded.add(pr.readVarint())
+        else:
+          sr.skipField(wt)
+      check decoded == @[0'u64, 1'u64]
+
+    test "all-default profile encodes to empty (period_type default suppressed)":
+      var w: ProtoWriter
+      encodeProfile(w, Profile())
+      # Every field is its zero value; the embedded period_type (ValueType(0,0))
+      # is itself empty and suppressed → the whole message is empty.
+      check w.buf.len == 0
 
   suite "Profiles JSON encoding (alpha)":
     test "profileToJson produces valid ExportProfilesServiceRequest JSON":
       let res = Resource(attributes: initAttributeSet())
       let scope = InstrumentationScope(attributes: initAttributeSet())
-      let j = parseJson(profileToJson(res, scope, @[samplePrtofile()]))
+      let j = parseJson(profileToJson(res, scope, @[sampleProfile()]))
       check j.hasKey("resourceProfiles")
       check j["resourceProfiles"][0].hasKey("resource")
       check j["resourceProfiles"][0]["scopeProfiles"][0].hasKey("profiles")
@@ -70,7 +102,7 @@ when defined(observyProfiles):
     test "timeNanos and durationNanos are JSON strings":
       let res = Resource(attributes: initAttributeSet())
       let scope = InstrumentationScope(attributes: initAttributeSet())
-      let j = parseJson(profileToJson(res, scope, @[samplePrtofile()]))
+      let j = parseJson(profileToJson(res, scope, @[sampleProfile()]))
       let p = j["resourceProfiles"][0]["scopeProfiles"][0]["profiles"][0]
       check p["timeNanos"].kind == JString
       check p["timeNanos"].getStr() == "1700000000000000000"
@@ -79,7 +111,7 @@ when defined(observyProfiles):
     test "sample timestampsUnixNano are JSON strings":
       let res = Resource(attributes: initAttributeSet())
       let scope = InstrumentationScope(attributes: initAttributeSet())
-      let j = parseJson(profileToJson(res, scope, @[samplePrtofile()]))
+      let j = parseJson(profileToJson(res, scope, @[sampleProfile()]))
       let s = j["resourceProfiles"][0]["scopeProfiles"][0]["profiles"][0]["sample"][0]
       check s["timestampsUnixNano"][0].kind == JString
       check s["timestampsUnixNano"][0].getStr() == "1700000000000000000"
@@ -87,10 +119,12 @@ when defined(observyProfiles):
     test "sampleType and stringTable present in JSON":
       let res = Resource(attributes: initAttributeSet())
       let scope = InstrumentationScope(attributes: initAttributeSet())
-      let j = parseJson(profileToJson(res, scope, @[samplePrtofile()]))
+      let j = parseJson(profileToJson(res, scope, @[sampleProfile()]))
       let p = j["resourceProfiles"][0]["scopeProfiles"][0]["profiles"][0]
       check p["sampleType"].len == 1
-      check p["sampleType"][0]["type"].getInt() == 1
+      # proto3-JSON: int64 fields are strings, not numbers.
+      check p["sampleType"][0]["type"].kind == JString
+      check p["sampleType"][0]["type"].getStr() == "1"
       check p["stringTable"].len == 7
 
 else:
