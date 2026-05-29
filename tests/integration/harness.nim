@@ -15,7 +15,10 @@ import std/monotimes
 import std/times
 
 const
-  defaultHealthUrl* = "http://localhost:13133/"
+  # 127.0.0.1 (not "localhost") so we never depend on IPv6 (::1) resolution —
+  # the collector's health_check binds IPv4 0.0.0.0, and a localhost→::1 lookup
+  # hangs the client. The live CI check exercises this exact default.
+  defaultHealthUrl* = "http://127.0.0.1:13133/"
   collectorOutputPath* = "collector-output/signals.json"
 
 proc waitForCollector*(timeoutMs = 30000; healthUrl = defaultHealthUrl) =
@@ -36,13 +39,27 @@ proc waitForCollector*(timeoutMs = 30000; healthUrl = defaultHealthUrl) =
         "collector not healthy at " & healthUrl & " within " & $timeoutMs & "ms")
     sleep(500)
 
-proc readCollectorOutput*(): string =
+proc readCollectorOutput*(path = collectorOutputPath): string =
   ## Read the collector's signals output file (empty string if absent).
-  if fileExists(collectorOutputPath): readFile(collectorOutputPath) else: ""
+  if fileExists(path): readFile(path) else: ""
 
-proc clearCollectorOutput*() =
+proc clearCollectorOutput*(path = collectorOutputPath) =
   ## Truncate the collector's signals output file to empty.
-  writeFile(collectorOutputPath, "")
+  writeFile(path, "")
+
+proc waitForOutput*(predicate: proc (content: string): bool {.gcsafe.};
+                    timeoutMs = 10000; path = collectorOutputPath): string =
+  ## Poll the collector output file every 200ms until `predicate(content)` is true
+  ## or the timeout elapses; returns the last-read content. The collector's batch
+  ## processor + file exporter flush asynchronously, so a read immediately after a
+  ## 200 response is racy — downstream signal tests should wait on the data they
+  ## expect (e.g. proc (s) => s.contains("my-span")) rather than read once.
+  let deadline = getMonoTime() + initDuration(milliseconds = timeoutMs)
+  while true:
+    result = readCollectorOutput(path)
+    if predicate(result): return
+    if getMonoTime() >= deadline: return    # caller asserts on the returned content
+    sleep(200)
 
 # ---------------------------------------------------------------------------
 # Assertion helpers. The output may contain several newline-delimited JSON
@@ -76,11 +93,14 @@ proc collectAttrStrings(node: JsonNode; key: string): seq[string] =
     for v in node: result.add(collectAttrStrings(v, key))
 
 proc assertServiceName*(jsonStr, name: string) =
+  ## Scoped to each Resource block's own `resource.attributes` (not span/scope
+  ## attributes), so a span-level service.name can't satisfy it.
   let docs = parseLines(jsonStr)
   var found = false
   for rb in resourceBlocks(docs):
-    if name in collectAttrStrings(rb, "service.name"): found = true
-  doAssert found, "service.name '" & name & "' not found in collector output"
+    if rb.kind == JObject and rb.hasKey("resource"):
+      if name in collectAttrStrings(rb["resource"], "service.name"): found = true
+  doAssert found, "service.name '" & name & "' not found in resource attributes"
 
 proc assertSpanCount*(jsonStr: string; n: int) =
   let docs = parseLines(jsonStr)

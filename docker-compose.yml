@@ -9,9 +9,6 @@ services:
       - "4317:4317"   # OTLP gRPC
       - "4318:4318"   # OTLP HTTP
       - "13133:13133" # health check
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
-      interval: 5s
-      timeout: 3s
-      retries: 10
-      start_period: 5s
+    # No container healthcheck: the contrib image is distroless (no wget/curl/sh),
+    # so a CMD healthcheck can't run. Readiness is gated from the host instead —
+    # the integration harness's waitForCollector() polls :13133 (see CI).

@@ -1,5 +1,6 @@
 import unittest
 import std/os
+import std/strutils
 import ./harness
 
 # Sample OTLP-JSON as the collector's file exporter writes it (newline-delimited
@@ -52,9 +53,33 @@ suite "harness assertion helpers":
     assertLogBody(combined, "hello world")
 
 suite "harness output file IO":
-  test "clear then read round-trips empty":
-    clearCollectorOutput()
-    check readCollectorOutput() == ""
+  test "clear then read round-trips empty (temp path, not the live file)":
+    let tmp = getTempDir() / "observy_harness_io.json"
+    writeFile(tmp, "stale")
+    clearCollectorOutput(tmp)
+    check readCollectorOutput(tmp) == ""
+    removeFile(tmp)
+
+  test "readCollectorOutput returns empty for a missing file":
+    let tmp = getTempDir() / "observy_harness_absent.json"
+    removeFile(tmp)
+    check readCollectorOutput(tmp) == ""
+
+  test "waitForOutput returns as soon as the predicate matches":
+    let tmp = getTempDir() / "observy_harness_wait.json"
+    writeFile(tmp, "{\"resourceSpans\":[]}\n")
+    let got = waitForOutput(proc (c: string): bool {.gcsafe.} = c.contains("resourceSpans"),
+                            timeoutMs = 2000, path = tmp)
+    check got.contains("resourceSpans")
+    removeFile(tmp)
+
+  test "waitForOutput returns last content on timeout (no match)":
+    let tmp = getTempDir() / "observy_harness_wait2.json"
+    writeFile(tmp, "nothing useful")
+    let got = waitForOutput(proc (c: string): bool {.gcsafe.} = c.contains("never"),
+                            timeoutMs = 400, path = tmp)
+    check got == "nothing useful"
+    removeFile(tmp)
 
 suite "harness waitForCollector":
   test "raises on timeout against a dead endpoint":
@@ -62,8 +87,8 @@ suite "harness waitForCollector":
       waitForCollector(timeoutMs = 600, healthUrl = "http://127.0.0.1:1/")
 
   # Live check: only runs when the collector is up. Enable with -d:liveCollector.
-  # (Uses 127.0.0.1 rather than localhost to avoid IPv6-resolution flakiness.)
+  # Uses the shipped default healthUrl (127.0.0.1) so CI exercises it directly.
   when defined(liveCollector):
     test "returns promptly when the collector is healthy":
-      waitForCollector(timeoutMs = 30000, healthUrl = "http://127.0.0.1:13133/")
+      waitForCollector(timeoutMs = 30000)
       check true
