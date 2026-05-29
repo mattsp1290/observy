@@ -659,3 +659,58 @@ suite "Metrics attribute limits on NumberDataPoint":
       @[m]))
     let attrs_j = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]["attributes"]
     check attrs_j.len == 128
+
+suite "Temporality selector — end-to-end through encoder":
+  proc makeCounterWithCumulative(): Metric =
+    Metric(
+      name: "req_total",
+      kind: mkSum,
+      sum: MetricSum(
+        dataPoints: @[NumberDataPoint(
+          attributes:  initAttributeSet(),
+          timeUnixNano: 1'u64,
+          kind: ndpInt, intValue: 42,
+        )],
+        aggregationTemporality: aggTempCumulative,
+        isMonotonic: true,
+      ),
+    )
+
+  test "alwaysDelta selector relabels Sum to DELTA in JSON encoder":
+    let m = applyTemporalitySelector(makeCounterWithCumulative(), alwaysDelta())
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempDelta)
+
+  test "nil selector leaves Sum temporality unchanged in JSON encoder":
+    let m = makeCounterWithCumulative()   # no selector applied
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempCumulative)
+
+  test "alwaysCumulative selector relabels DELTA Sum to CUMULATIVE in JSON encoder":
+    var m = makeCounterWithCumulative()
+    m.sum.aggregationTemporality = aggTempDelta   # start as delta
+    let applied = applyTemporalitySelector(m, alwaysCumulative())
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[applied]))
+    let dp = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]
+    check dp["sum"]["aggregationTemporality"].getInt() == ord(aggTempCumulative)
+
+  test "selector is gcsafe — compiles when used from gcsafe context":
+    # This is the regression lock for the C-1 fix: verifies the selector type
+    # is {.gcsafe.} by calling it from a gcsafe proc. A compile error here
+    # means the gcsafe annotation was removed.
+    proc callFromGcsafe(sel: AggregationTemporalitySelector) {.gcsafe.} =
+      let _ = sel(mkSum)
+    callFromGcsafe(alwaysDelta())
+    callFromGcsafe(alwaysCumulative())
+    check true

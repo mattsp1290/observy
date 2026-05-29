@@ -152,12 +152,14 @@ type
   # exporter to override the temporality of outbound metrics. Only meaningful
   # for mkSum, mkHistogram, and mkExpHistogram — must return aggTempUnspecified
   # for mkGauge and mkSummary (those types have no aggregation temporality).
-  AggregationTemporalitySelector* = proc(kind: MetricKind): AggregationTemporality
+  # {.gcsafe.} matches the convention of every other library callback (onBatch,
+  # WarnProc, retry hooks) and allows the selector to be called from a worker thread.
+  AggregationTemporalitySelector* = proc(kind: MetricKind): AggregationTemporality {.gcsafe.}
 
 proc alwaysCumulative*(): AggregationTemporalitySelector =
   ## Returns a selector that sets CUMULATIVE on Sum/Histogram/ExpHistogram and
   ## UNSPECIFIED on Gauge/Summary (which have no meaningful temporality).
-  result = proc(kind: MetricKind): AggregationTemporality =
+  result = proc(kind: MetricKind): AggregationTemporality {.gcsafe.} =
     case kind
     of mkSum, mkHistogram, mkExpHistogram: aggTempCumulative
     of mkGauge, mkSummary:                 aggTempUnspecified
@@ -165,23 +167,27 @@ proc alwaysCumulative*(): AggregationTemporalitySelector =
 proc alwaysDelta*(): AggregationTemporalitySelector =
   ## Returns a selector that sets DELTA on Sum/Histogram/ExpHistogram and
   ## UNSPECIFIED on Gauge/Summary (which have no meaningful temporality).
-  result = proc(kind: MetricKind): AggregationTemporality =
+  result = proc(kind: MetricKind): AggregationTemporality {.gcsafe.} =
     case kind
     of mkSum, mkHistogram, mkExpHistogram: aggTempDelta
     of mkGauge, mkSummary:                 aggTempUnspecified
 
 proc applyTemporalitySelector*(m: Metric;
                                 sel: AggregationTemporalitySelector): Metric =
-  ## Return a copy of `m` with aggregationTemporality overridden by `sel`.
-  ## Gauge and Summary are returned unchanged (selector must return UNSPECIFIED
-  ## for those, and the encoder ignores the field on those types anyway).
+  ## Return a copy of `m` with aggregationTemporality relabeled by `sel`.
+  ## Note: relabels the `aggregationTemporality` field only — performs NO data
+  ## conversion. Caller must supply data already in the target temporality.
+  ## Gauge and Summary are returned unchanged (no temporality field).
   result = m
-  let t = sel(m.kind)
   case m.kind
-  of mkSum:          result.sum.aggregationTemporality          = t
-  of mkHistogram:    result.histogram.aggregationTemporality    = t
-  of mkExpHistogram: result.expHistogram.aggregationTemporality = t
-  of mkGauge, mkSummary: discard
+  of mkSum:
+    result.sum.aggregationTemporality          = sel(m.kind)
+  of mkHistogram:
+    result.histogram.aggregationTemporality    = sel(m.kind)
+  of mkExpHistogram:
+    result.expHistogram.aggregationTemporality = sel(m.kind)
+  of mkGauge, mkSummary:
+    discard
 
 # ---------------------------------------------------------------------------
 # Proto encoding
