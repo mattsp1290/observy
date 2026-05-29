@@ -231,11 +231,12 @@ def gen_proto():
     )
     write_bin("summary_metric.bin", summary)
 
-    # log_record.bin — all LogRecord fields available in this SDK version.
-    # NOTE: event_name (field 12) is absent from this fixture because opentelemetry-api
-    # 1.31.1 bundles an older proto that lacks it. Once the SDK is updated to include
-    # opentelemetry-proto >= 1.10.0, regenerate with event_name="user.login" added.
-    # Tracked in beads issue observy-event-name-fixture (TODO: file after merge).
+    # log_record.bin — all LogRecord fields, including event_name (field 12).
+    # event_name is absent from the proto bundled by older opentelemetry-proto
+    # PyPI releases (e.g. 1.31.1) and present from 1.36.0, which is the version
+    # this fixture was regenerated with (observy-4fz). Regenerate only against
+    # opentelemetry-proto >= 1.36.0 (see tools/requirements.txt), or field 12 is
+    # silently dropped and the golden tests break.
     log = LogRecord(
         time_unix_nano=1_000_000_000_000_000_000,
         observed_time_unix_nano=1_000_000_000_100_000_000,
@@ -251,6 +252,7 @@ def gen_proto():
         flags=1,
         trace_id=tid,
         span_id=sid,
+        event_name="user.login",
     )
     write_bin("log_record.bin", log)
 
