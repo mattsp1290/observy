@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: iffy/install-nim@v5
+        with:
+          version: stable
+
+      - name: Run unit tests
+        # config.nims in the repo root already injects --mm:orc --threads:on;
+        # the flags here are explicit redundancy so CI is self-documenting.
+        run: |
+          nim compile --mm:orc --threads:on -r tests/test_anyvalue.nim
+          nim compile --mm:orc --threads:on -r tests/test_proto.nim
+          nim compile --mm:orc --threads:on -r tests/test_resource.nim
+          nim compile --mm:orc --threads:on -r tests/test_traces.nim
+          nim compile --mm:orc --threads:on -r tests/test_logs.nim
+          nim compile --mm:orc --threads:on -r tests/test_metrics.nim
+          nim compile --mm:orc --threads:on -r tests/test_json_encode.nim
+          nim compile --mm:orc --threads:on -r tests/test_config.nim
+
+      - name: Start OTel collector and wait for health
+        # --wait blocks until the healthcheck in docker-compose.yml reports healthy
+        # (polls localhost:13133 via wget; up to 10 retries × 5s = ~50s timeout)
+        run: docker compose up -d --wait
+
+      - name: Run integration tests
+        # Placeholder — add signal-export integration tests when exporter is implemented
+        # (tracked in beads as future work)
+        run: echo "Integration tests placeholder — add when exporter is implemented"
+
+      - name: Stop collector
+        if: always()
+        run: docker compose down -v
