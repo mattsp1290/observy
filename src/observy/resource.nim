@@ -39,7 +39,10 @@ proc protoEncodeKeyValues*(w: var ProtoWriter; fieldNumber: uint32;
     inner.writeString(1, kv.key)
     var valW: ProtoWriter
     protoEncodeAnyValue(valW, kv.value)
-    inner.writeEmbedded(2, valW)
+    # writeEmbeddedForce: protoEncodeAnyValue is total (always emits ≥1 tag byte),
+    # so valW.buf is never empty, but use Force explicitly to prevent a future
+    # regression from silently dropping the value oneof discriminator.
+    inner.writeEmbeddedForce(2, valW)
     w.writeEmbedded(fieldNumber, inner)
 
 proc protoEncodeAnyValue*(w: var ProtoWriter; v: AnyValue) =

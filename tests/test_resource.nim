@@ -236,7 +236,9 @@ suite "AnyValue proto encoding — oneof zero-value presence":
   proc fieldNumberOf(v: AnyValue): uint32 =
     var w: ProtoWriter
     protoEncodeAnyValue(w, v)
-    if w.buf.len == 0: return 0'u32
+    # After the Force fix, protoEncodeAnyValue always emits ≥1 byte.
+    # doAssert so a regression fails loudly instead of returning a misleading 0.
+    doAssert w.buf.len > 0, "protoEncodeAnyValue produced no output — Force variant broke"
     var r = ProtoReader(data: w.buf)
     let (fn, _) = r.readTag()
     fn
@@ -267,3 +269,99 @@ suite "AnyValue proto encoding — oneof zero-value presence":
 
   test "avInt non-zero still emits field 3 (regression)":
     check fieldNumberOf(AnyValue(kind: avInt, intVal: 42)) == 3'u32
+
+suite "AnyValue proto encoding — attribute path (protoEncodeKeyValues)":
+  # Regression: pre-fix, a zero-valued attribute produced a KeyValue with key
+  # field but NO value field (inner.writeEmbedded(2, valW) suppressed empty valW).
+  # Verify that a KeyValue with a zero/empty AnyValue value emits field 2.
+
+  proc decodeKeyValue(buf: seq[byte]): (string, uint32) =
+    ## Decode a KeyValue proto message; return (key, inner-value-field-number).
+    var r = ProtoReader(data: buf)
+    var key = ""
+    var valueFieldNo = 0'u32
+    while r.pos < buf.len:
+      let (fn, wt) = r.readTag()
+      if fn == 1'u32:
+        key = r.readString()
+      elif fn == 2'u32:
+        let vbuf = r.readBytes()
+        if vbuf.len > 0:
+          var vr = ProtoReader(data: vbuf)
+          let (vfn, _) = vr.readTag()
+          valueFieldNo = vfn
+        else:
+          r.skipField(wt)
+      else:
+        r.skipField(wt)
+    (key, valueFieldNo)
+
+  test "zero int attribute preserves value field in KeyValue":
+    var attrs = initAttributeSet()
+    attrs.add("count", AnyValue(kind: avInt, intVal: 0))
+    var w: ProtoWriter
+    protoEncodeKeyValues(w, 1, attrs.pairs)
+    # w.buf holds an outer KV embedded at field 1; skip the outer tag+len to get the KV bytes
+    var r = ProtoReader(data: w.buf)
+    let (_, _) = r.readTag()                  # outer field 1
+    let kvBuf = r.readBytes()
+    let (key, valueField) = decodeKeyValue(kvBuf)
+    check key == "count"
+    check valueField == 3'u32                  # avInt → field 3
+
+  test "empty-string attribute preserves value field in KeyValue":
+    var attrs = initAttributeSet()
+    attrs.add("label", AnyValue(kind: avString, strVal: ""))
+    var w: ProtoWriter
+    protoEncodeKeyValues(w, 1, attrs.pairs)
+    var r = ProtoReader(data: w.buf)
+    let (_, _) = r.readTag()
+    let kvBuf = r.readBytes()
+    let (key, valueField) = decodeKeyValue(kvBuf)
+    check key == "label"
+    check valueField == 1'u32                  # avString → field 1
+
+  test "false bool attribute preserves value field in KeyValue":
+    var attrs = initAttributeSet()
+    attrs.add("ok", AnyValue(kind: avBool, boolVal: false))
+    var w: ProtoWriter
+    protoEncodeKeyValues(w, 1, attrs.pairs)
+    var r = ProtoReader(data: w.buf)
+    let (_, _) = r.readTag()
+    let kvBuf = r.readBytes()
+    let (key, valueField) = decodeKeyValue(kvBuf)
+    check key == "ok"
+    check valueField == 2'u32                  # avBool → field 2
+
+suite "AnyValue proto encoding — round-trip zero values":
+  test "avInt 0 round-trips":
+    var w: ProtoWriter
+    protoEncodeAnyValue(w, AnyValue(kind: avInt, intVal: 0))
+    var r = ProtoReader(data: w.buf)
+    let (fn, _) = r.readTag()
+    check fn == 3'u32
+    check r.readInt64() == 0
+
+  test "avBool false round-trips":
+    var w: ProtoWriter
+    protoEncodeAnyValue(w, AnyValue(kind: avBool, boolVal: false))
+    var r = ProtoReader(data: w.buf)
+    let (fn, _) = r.readTag()
+    check fn == 2'u32
+    check r.readBool() == false
+
+  test "avString empty round-trips":
+    var w: ProtoWriter
+    protoEncodeAnyValue(w, AnyValue(kind: avString, strVal: ""))
+    var r = ProtoReader(data: w.buf)
+    let (fn, _) = r.readTag()
+    check fn == 1'u32
+    check r.readString() == ""
+
+  test "avDouble 0.0 round-trips":
+    var w: ProtoWriter
+    protoEncodeAnyValue(w, AnyValue(kind: avDouble, dblVal: 0.0))
+    var r = ProtoReader(data: w.buf)
+    let (fn, _) = r.readTag()
+    check fn == 4'u32
+    check r.readDouble() == 0.0
