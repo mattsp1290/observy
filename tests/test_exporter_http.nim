@@ -2,6 +2,7 @@ import unittest
 import std/net
 import std/strutils
 import std/httpcore
+import std/times
 import ../src/observy/config
 import ../src/observy/exporter_http
 import ../src/observy/retry
@@ -329,3 +330,99 @@ suite "Input validation at system boundary":
     # 3-byte UTF-8 char: truncating at maxValueLen=2 must not cut it
     attrs.add("k", AnyValue(kind: avString, strVal: "\xE4\xB8\xAD"))
     check attrs.pairs[0].value.strVal == ""   # can't fit the 3-byte char in 2 bytes
+
+# ---------------------------------------------------------------------------
+# Multi-response mock: returns different HTTP responses per connection number.
+# ---------------------------------------------------------------------------
+var multiReqChan: Channel[string]
+var multiPortChan: Channel[int]
+var multiResponses: seq[string]
+
+proc runMultiMock() {.thread.} =
+  {.cast(gcsafe).}:
+    var server = newSocket()
+    var portSent = false
+    try:
+      server.setSockOpt(OptReuseAddr, true)
+      server.bindAddr(Port(0))
+      server.listen()
+      multiPortChan.send(int(server.getLocalAddr()[1]))
+      portSent = true
+      for resp in multiResponses:
+        var client: Socket
+        server.accept(client)
+        let req = recvRequest(client)
+        client.send(resp)
+        client.close()
+        multiReqChan.send(req)
+    except CatchableError as ex:
+      if not portSent: multiPortChan.send(-1)
+      multiReqChan.send("ERROR: " & ex.msg)
+    finally:
+      server.close()
+
+proc captureMulti(responses: seq[string]; body: proc (port: int)): seq[string] =
+  # INVARIANT: `body` must open exactly `responses.len` fresh TCP connections.
+  # If body opens fewer (e.g. a non-retryable response is not in the last slot),
+  # the mock blocks on `accept()` and `joinThread` hangs the whole test binary.
+  multiResponses = responses
+  multiReqChan.open()
+  multiPortChan.open()
+  var t: Thread[void]
+  createThread(t, runMultiMock)
+  let port = multiPortChan.recv()
+  doAssert port > 0, "multi-mock failed to bind"
+  body(port)
+  joinThread(t)
+  for _ in responses:
+    let (ok, r) = multiReqChan.tryRecv()
+    if ok: result.add(r)
+  multiReqChan.close()
+  multiPortChan.close()
+
+suite "retryWithBackoff — end-to-end HTTP retry scenarios":
+  # Use fast (no-sleep) hooks for deterministic, fast tests.
+  proc fastHooks(): RetryHooks =
+    var fakeTime = 0.0
+    RetryHooks(
+      nowSec:  proc (): float {.gcsafe.} = {.cast(gcsafe).}: fakeTime,
+      sleepMs: proc (ms: int) {.gcsafe.} = {.cast(gcsafe).}: fakeTime += ms.float / 1000.0,
+      jitter:  proc (d: float): float {.gcsafe.} = d,
+      nowWall: proc (): Time {.gcsafe.} = {.cast(gcsafe).}: getTime(),
+    )
+
+  test "503 twice then 200 — retries twice and succeeds":
+    # Connection: close prevents httpclient from reusing a stale keep-alive socket
+    # after the mock closes it, which would generate spurious transport errors and
+    # inflate attempt count beyond 3. With Connection: close each attempt opens a
+    # fresh TCP connection → exactly 3 attempts total.
+    const
+      r503 = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+      r200 = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    var result: ExportResult
+    let reqs = captureMulti(@[r503, r503, r200], proc (port: int) =
+      var cfg = baseConfig()
+      cfg.maxRetryElapsed = 60
+      cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+      var e = newOtlpHttpExporter(cfg)
+      result = e.retryWithBackoff(cfg.signalEndpoints[SigTraces],
+                                  @[0x01'u8], "application/x-protobuf",
+                                  hooks = fastHooks())
+      e.close())
+    check result.succeeded
+    check result.attempts == 3   # exactly: attempt 1 (503), attempt 2 (503), attempt 3 (200)
+    check result.response.code == Http200
+    check reqs.len == 3          # mock answered exactly 3 connections
+
+  test "400 does not retry — returns on first attempt":
+    const r400 = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+    var result: ExportResult
+    discard captureMulti(@[r400], proc (port: int) =
+      var e = newOtlpHttpExporter(baseConfig())
+      result = e.retryWithBackoff("http://127.0.0.1:" & $port & "/v1/traces",
+                                  @[0x01'u8], "application/x-protobuf",
+                                  hooks = fastHooks())
+      e.close())
+    check not result.succeeded
+    check result.attempts == 1
+    check result.response.code == Http400
