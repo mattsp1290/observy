@@ -9,6 +9,19 @@
 #
 # The core state machine (retryLoop) takes injectable clock/sleep/jitter hooks
 # and a send thunk, so it is fully unit-testable with a fake clock and no network.
+#
+# Keep-alive socket reuse (decision for observy-cn3): Nim's std/httpclient pools
+# the underlying connection. When the collector/load-balancer closes an idle
+# socket between batched exports, the NEXT send on that exporter reuses the dead
+# socket and fails with `ProtocolError: Connection was closed before full request
+# has been made`. We deliberately do NOT special-case this: it is already a
+# retryable transport error here, so retryWithBackoff recovers on a fresh
+# reconnect (the next attempt opens a new socket), costing at most one extra
+# attempt against the budget. A `Connection: close` request header does NOT
+# prevent the reuse (empirically confirmed — httpclient ignores it for pooling),
+# so it is not a viable mitigation. Callers using bare record()/sendSignal()
+# WITHOUT this retry wrapper may observe the ProtocolError directly and should
+# either wrap with retryWithBackoff or catch-and-retry themselves.
 import std/strutils
 import std/times
 import std/monotimes
