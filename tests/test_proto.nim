@@ -372,6 +372,9 @@ proc readBin(path: string): seq[byte] =
   for i, c in s: result[i] = byte(c)
 
 proc encodeAnyValue(w: var ProtoWriter; v: AnyValue) =
+  # avArray/avKvList intentionally not handled here — none of the current fixtures
+  # exercise them. A missing AnyValue kind produces an empty embedded message which
+  # writeEmbedded skips, so a golden-byte test would fail loudly rather than silently pass.
   case v.kind
   of avString: w.writeString(1, v.strVal)
   of avBool:   w.writeBool(2, v.boolVal)

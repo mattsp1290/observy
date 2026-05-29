@@ -207,6 +207,7 @@ suite "golden JSON fixtures — int64_string.json":
     let j = parseJson(readFile("tests/fixtures/json/int64_string.json"))
     check j["startTimeUnixNano"].kind == JString
     check j["startTimeUnixNano"].getStr() == "1000000000000000000"
+    # "intAttribute" is a synthetic documentation key in the fixture (not an OTLP field name).
     check j["intAttribute"]["intValue"].kind == JString
 
 suite "golden JSON fixtures — full_span.json":
@@ -254,3 +255,24 @@ suite "golden JSON fixtures — full_span.json":
         check attr["value"]["bytesValue"].getStr() == "AQIDBA=="
         found = true
     check found
+
+  test "fixture file — kind is an integer (OTLP-JSON uses enum int not name)":
+    # OTLP-JSON maps enums to their integer value, not the name string.
+    let j = parseJson(readFile("tests/fixtures/json/full_span.json"))
+    check j["kind"].kind == JInt
+    check j["kind"].getInt() == 2  # SpanKind.SERVER
+
+suite "golden JSON fixtures — span_id_hex.json":
+  test "fixture file — spanId is 16 lowercase hex chars":
+    let j = parseJson(readFile("tests/fixtures/json/span_id_hex.json"))
+    let sid = j["spanId"].getStr()
+    check sid.len == 16
+    check sid == "00f067aa0ba902b7"
+    for c in sid: check c in {'0'..'9', 'a'..'f'}
+
+  test "spanId from model matches fixture":
+    # Construct the same SpanId used in gen_fixtures.py and verify encoder output matches
+    var sid: SpanId
+    let hex = "00f067aa0ba902b7"
+    for i in 0 ..< 8: sid[i] = parseHexByte(hex, i)
+    check hexEncodeSpanId(sid) == hex

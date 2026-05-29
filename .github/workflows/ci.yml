@@ -18,6 +18,8 @@ jobs:
           version: stable
 
       - name: Run unit tests
+        # config.nims in the repo root already injects --mm:orc --threads:on;
+        # the flags here are explicit redundancy so CI is self-documenting.
         run: |
           nim compile --mm:orc --threads:on -r tests/test_anyvalue.nim
           nim compile --mm:orc --threads:on -r tests/test_proto.nim
@@ -28,23 +30,14 @@ jobs:
           nim compile --mm:orc --threads:on -r tests/test_json_encode.nim
           nim compile --mm:orc --threads:on -r tests/test_config.nim
 
-      - name: Start OTel collector
-        run: docker compose up -d
-
-      - name: Wait for collector health check
-        run: |
-          for i in $(seq 1 15); do
-            if curl -sf http://localhost:13133/ > /dev/null 2>&1; then
-              echo "Collector ready after ${i}s"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Collector did not become healthy in 30s" >&2
-          docker compose logs
-          exit 1
+      - name: Start OTel collector and wait for health
+        # --wait blocks until the healthcheck in docker-compose.yml reports healthy
+        # (polls localhost:13133 via wget; up to 10 retries × 5s = ~50s timeout)
+        run: docker compose up -d --wait
 
       - name: Run integration tests
+        # Placeholder — add signal-export integration tests when exporter is implemented
+        # (tracked in beads as future work)
         run: echo "Integration tests placeholder — add when exporter is implemented"
 
       - name: Stop collector
