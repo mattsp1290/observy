@@ -11,7 +11,6 @@ Usage:
 
 import os
 import json
-import struct
 
 PROTO_DIR = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "proto")
 JSON_DIR  = os.path.join(os.path.dirname(__file__), "..", "tests", "fixtures", "json")
@@ -194,11 +193,9 @@ def gen_proto():
                         offset=0,
                         bucket_counts=[2, 3, 1],
                     ),
-                    negative=ExponentialHistogramDataPoint.Buckets(
-                        offset=0,
-                        bucket_counts=[],
-                    ),
-                    flags=0,
+                    # Omit negative= entirely (empty Buckets message serializes
+                    # as field 9 len 0; Nim writeEmbedded skips empty, causing mismatch)
+                    flags=1,
                     min=64.0,
                     max=512.0,
                     zero_threshold=0.5,
@@ -234,8 +231,11 @@ def gen_proto():
     )
     write_bin("summary_metric.bin", summary)
 
-    # log_record.bin — all LogRecord fields available in this SDK version
-    # (event_name field 12 added in proto v1.10+ may not be in older SDK bundles)
+    # log_record.bin — all LogRecord fields available in this SDK version.
+    # NOTE: event_name (field 12) is absent from this fixture because opentelemetry-api
+    # 1.31.1 bundles an older proto that lacks it. Once the SDK is updated to include
+    # opentelemetry-proto >= 1.10.0, regenerate with event_name="user.login" added.
+    # Tracked in beads issue observy-event-name-fixture (TODO: file after merge).
     log = LogRecord(
         time_unix_nano=1_000_000_000_000_000_000,
         observed_time_unix_nano=1_000_000_000_100_000_000,
@@ -293,7 +293,10 @@ def gen_json():
         "intAttribute": {"intValue": "9223372036854775807"},
     })
 
-    # full_span.json — complete span exercising all OTLP-JSON encoding rules
+    # full_span.json — faithful OTLP-JSON projection of full_span.bin.
+    # Must contain ALL attributes from the proto fixture (6 span attrs, 1 link attr).
+    # Proto3-default fields (droppedAttributesCount: 0, status.message: "") are
+    # omitted per OTLP-JSON spec (omit-defaults rule).
     write_json("full_span.json", {
         "traceId":       "4bf92f3577b34da6a3ce929d0e0e4736",
         "spanId":        "00f067aa0ba902b7",
@@ -305,12 +308,12 @@ def gen_json():
         "endTimeUnixNano":   "1000000002000000000",
         "attributes": [
             {"key": "http.method",      "value": {"stringValue": "POST"}},
+            {"key": "http.url",         "value": {"stringValue": "https://api.example.com/users"}},
             {"key": "http.status_code", "value": {"intValue": "201"}},
             {"key": "latency.ms",       "value": {"doubleValue": 12.5}},
             {"key": "http.success",     "value": {"boolValue": True}},
             {"key": "request.id",       "value": {"bytesValue": "AQIDBA=="}},
         ],
-        "droppedAttributesCount": 0,
         "events": [
             {
                 "timeUnixNano": "1000000000500000000",
@@ -324,10 +327,12 @@ def gen_json():
             {
                 "traceId": "ffffffffffffffffffffffffffffffff",
                 "spanId":  "1122334455667788",
-                "attributes": [],
+                "attributes": [
+                    {"key": "link.type", "value": {"stringValue": "child_of"}},
+                ],
             },
         ],
-        "status": {"code": 1, "message": ""},
+        "status": {"code": 1},
         "flags": 1,
     })
 

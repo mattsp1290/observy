@@ -15,6 +15,12 @@
       }
     },
     {
+      "key": "http.url",
+      "value": {
+        "stringValue": "https://api.example.com/users"
+      }
+    },
+    {
       "key": "http.status_code",
       "value": {
         "intValue": "201"
@@ -39,7 +45,6 @@
       }
     }
   ],
-  "droppedAttributesCount": 0,
   "events": [
     {
       "timeUnixNano": "1000000000500000000",
@@ -58,12 +63,18 @@
     {
       "traceId": "ffffffffffffffffffffffffffffffff",
       "spanId": "1122334455667788",
-      "attributes": []
+      "attributes": [
+        {
+          "key": "link.type",
+          "value": {
+            "stringValue": "child_of"
+          }
+        }
+      ]
     }
   ],
   "status": {
-    "code": 1,
-    "message": ""
+    "code": 1
   },
   "flags": 1
 }
