@@ -26,7 +26,7 @@ type
     ## underlying socket and `close` on one copy invalidates the others — treat
     ## it as move-only / single-owner (one exporter per worker thread).
     config*: ExporterConfig
-    client*: HttpClient
+    client:  HttpClient      ## internal transport (ref); not part of the value-type surface
     warn*:   WarnProc        ## called on partial-success rejections; never silent
 
   ExportResponse* = object
