@@ -348,7 +348,7 @@ proc runMultiMock() {.thread.} =
       server.listen()
       multiPortChan.send(int(server.getLocalAddr()[1]))
       portSent = true
-      for i, resp in multiResponses:
+      for resp in multiResponses:
         var client: Socket
         server.accept(client)
         let req = recvRequest(client)
@@ -362,6 +362,9 @@ proc runMultiMock() {.thread.} =
       server.close()
 
 proc captureMulti(responses: seq[string]; body: proc (port: int)): seq[string] =
+  # INVARIANT: `body` must open exactly `responses.len` fresh TCP connections.
+  # If body opens fewer (e.g. a non-retryable response is not in the last slot),
+  # the mock blocks on `accept()` and `joinThread` hangs the whole test binary.
   multiResponses = responses
   multiReqChan.open()
   multiPortChan.open()
@@ -389,12 +392,15 @@ suite "retryWithBackoff — end-to-end HTTP retry scenarios":
     )
 
   test "503 twice then 200 — retries twice and succeeds":
-    # The mock returns 503 on the first two attempts then 200 on the third.
+    # Connection: close prevents httpclient from reusing a stale keep-alive socket
+    # after the mock closes it, which would generate spurious transport errors and
+    # inflate attempt count beyond 3. With Connection: close each attempt opens a
+    # fresh TCP connection → exactly 3 attempts total.
     const
-      r503 = "HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n"
-      r200 = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"
+      r503 = "HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
+      r200 = "HTTP/1.1 200 OK\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     var result: ExportResult
-    discard captureMulti(@[r503, r503, r200], proc (port: int) =
+    let reqs = captureMulti(@[r503, r503, r200], proc (port: int) =
       var cfg = baseConfig()
       cfg.maxRetryElapsed = 60
       cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
@@ -404,11 +410,12 @@ suite "retryWithBackoff — end-to-end HTTP retry scenarios":
                                   hooks = fastHooks())
       e.close())
     check result.succeeded
-    check result.attempts >= 3   # at least 2 retries after the two 503s
+    check result.attempts == 3   # exactly: attempt 1 (503), attempt 2 (503), attempt 3 (200)
     check result.response.code == Http200
+    check reqs.len == 3          # mock answered exactly 3 connections
 
   test "400 does not retry — returns on first attempt":
-    const r400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+    const r400 = "HTTP/1.1 400 Bad Request\r\nConnection: close\r\nContent-Length: 0\r\n\r\n"
     var result: ExportResult
     discard captureMulti(@[r400], proc (port: int) =
       var e = newOtlpHttpExporter(baseConfig())
