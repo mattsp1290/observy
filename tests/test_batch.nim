@@ -257,3 +257,44 @@ suite "BatchProcessor — Defect in onBatch does not kill the worker":
     check errMsgs.len == 1
     check errMsgs[0].contains("defect-boom")
     check sizes == @[1]       # the second batch (1 item) flushed; worker survived
+
+suite "BatchProcessor — concurrent producers":
+  test "4 threads each submit 100 items — all 400 exported":
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 50, flushIntervalMs: 500, maxQueueSize: 1000))
+    p.start(recordBatch)
+
+    # Spawn 4 producer threads, each submitting 100 items.
+    var threads: array[4, Thread[ptr BatchProcessor[Item]]]
+    proc produce(pp: ptr BatchProcessor[Item]) {.thread.} =
+      for i in 0 ..< 100:
+        pp[].submit(Item(id: i, name: "t" & $i))
+
+    for i in 0 ..< 4:
+      createThread(threads[i], produce, addr p)
+    joinThreads(threads)
+
+    p.shutdown()
+    let total = sum(drainSizes())
+    sizeChan.close()
+    check total == 400
+
+suite "BatchProcessor — maxSize fires during submission (not only on stop)":
+  test "submit maxSize+1 items: flush triggered before stop()":
+    # When maxSize items accumulate, the worker flushes immediately — the caller
+    # does not need to call stop/forceFlush to trigger the first batch.
+    sizeChan.open()
+    var p = newBatchProcessor[Item](
+      BatchConfig(maxSize: 5, flushIntervalMs: 60_000, maxQueueSize: 100))
+    p.start(recordBatch)
+    for i in 0 ..< 6:           # 5 triggers one flush, 6th queues
+      p.submit(Item(id: i, name: ""))
+    # Give the worker time to process the maxSize batch without forcing a flush.
+    sleep(200)
+    let midSizes = drainSizes()
+    # At least the first batch of 5 should have fired by now.
+    check sum(midSizes) >= 5
+    p.shutdown()
+    discard drainSizes()    # drain remainder
+    sizeChan.close()
