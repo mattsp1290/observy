@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nim
+        uses: iffy/install-nim@v5
+        with:
+          version: stable
+
+      - name: Run unit tests
+        run: |
+          nim compile --mm:orc --threads:on -r tests/test_anyvalue.nim
+          nim compile --mm:orc --threads:on -r tests/test_proto.nim
+          nim compile --mm:orc --threads:on -r tests/test_resource.nim
+          nim compile --mm:orc --threads:on -r tests/test_traces.nim
+          nim compile --mm:orc --threads:on -r tests/test_logs.nim
+          nim compile --mm:orc --threads:on -r tests/test_metrics.nim
+          nim compile --mm:orc --threads:on -r tests/test_json_encode.nim
+          nim compile --mm:orc --threads:on -r tests/test_config.nim
+
+      - name: Start OTel collector
+        run: docker compose up -d
+
+      - name: Wait for collector health check
+        run: |
+          for i in $(seq 1 15); do
+            if curl -sf http://localhost:13133/ > /dev/null 2>&1; then
+              echo "Collector ready after ${i}s"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Collector did not become healthy in 30s" >&2
+          docker compose logs
+          exit 1
+
+      - name: Run integration tests
+        run: echo "Integration tests placeholder — add when exporter is implemented"
+
+      - name: Stop collector
+        if: always()
+        run: docker compose down -v

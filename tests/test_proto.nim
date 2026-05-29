@@ -1,4 +1,6 @@
 import unittest
+import std/os
+import ../src/observy/anyvalue
 import ../src/observy/proto
 
 # ---------------------------------------------------------------------------
@@ -357,3 +359,97 @@ suite "validation":
   test "skipField unknown wire type raises ProtoError":
     var r = ProtoReader(data: @[0x00'u8])
     expect ProtoError: r.skipField(3'u8)
+
+# ---------------------------------------------------------------------------
+# Golden-byte fixture tests
+# Construct the same Nim model used in tools/gen_fixtures.py, encode with
+# ProtoWriter, compare output byte-for-byte against the Python-SDK-generated .bin
+# ---------------------------------------------------------------------------
+
+proc readBin(path: string): seq[byte] =
+  let s = readFile(path)
+  result = newSeq[byte](s.len)
+  for i, c in s: result[i] = byte(c)
+
+proc encodeAnyValue(w: var ProtoWriter; v: AnyValue) =
+  case v.kind
+  of avString: w.writeString(1, v.strVal)
+  of avBool:   w.writeBool(2, v.boolVal)
+  of avInt:    w.writeInt64(3, v.intVal)
+  of avDouble: w.writeDouble(4, v.dblVal)
+  of avBytes:  w.writeBytes(7, v.bytesVal)
+  else: discard
+
+proc encodeKVs(w: var ProtoWriter; fieldNo: uint32; kvs: openArray[KeyValue]) =
+  for kv in kvs:
+    var inner: ProtoWriter
+    inner.writeString(1, kv.key)
+    var valW: ProtoWriter
+    encodeAnyValue(valW, kv.value)
+    inner.writeEmbedded(2, valW)
+    w.writeEmbedded(fieldNo, inner)
+
+suite "golden-byte proto fixtures":
+  # Fixture paths relative to the project root (testament runs from there)
+  const
+    TID = [0x4b'u8,0xf9,0x2f,0x35,0x77,0xb3,0x4d,0xa6,
+           0xa3,0xce,0x92,0x9d,0x0e,0x0e,0x47,0x36]
+    SID = [0x00'u8,0xf0,0x67,0xaa,0x0b,0xa9,0x02,0xb7]
+
+  test "minimal_span.bin — trace_id, span_id, name, kind, fixed64 timestamps":
+    # Reproduces the minimal_span constructed in gen_fixtures.py:
+    #   trace_id=TID, span_id=SID, name="GET /api/users",
+    #   kind=SPAN_KIND_SERVER(2), start=10^18 ns, end=10^18+10^9 ns
+    var w: ProtoWriter
+    w.writeBytes(1, TID)                            # trace_id  field 1
+    w.writeBytes(2, SID)                            # span_id   field 2
+    w.writeString(5, "GET /api/users")              # name      field 5
+    w.writeInt32(6, 2'i32)                          # kind      field 6 (SERVER)
+    w.writeFixed64(7, 1_000_000_000_000_000_000'u64) # start   field 7 (fixed64)
+    w.writeFixed64(8, 1_000_000_001_000_000_000'u64) # end     field 8 (fixed64)
+    check w.buf == readBin("tests/fixtures/proto/minimal_span.bin")
+
+  test "counter_metric.bin — Sum metric, sfixed64 as_int, varint flags, kv attrs":
+    # counter: name, desc, unit, sum{ dp{start,time,as_int=42,attrs}, temp=CUMULATIVE, monotonic=true }
+    var dpW: ProtoWriter
+    dpW.writeFixed64(2, 1_000_000_000_000_000_000'u64)     # start_time_unix_nano
+    dpW.writeFixed64(3, 1_001_000_000_000_000_000'u64)     # time_unix_nano
+    dpW.writeFixed64(6, cast[uint64](42'i64))               # as_int (sfixed64 wire1)
+    encodeKVs(dpW, 7, [                                     # attributes field 7
+      KeyValue(key: "http.method",
+               value: AnyValue(kind: avString, strVal: "GET")),
+    ])
+    # flags=0 suppressed
+    var sumW: ProtoWriter
+    sumW.writeEmbedded(1, dpW)      # data_points
+    sumW.writeInt32(2, 2'i32)       # AGGREGATION_TEMPORALITY_CUMULATIVE
+    sumW.writeBool(3, true)         # is_monotonic
+    var w: ProtoWriter
+    w.writeString(1, "http.requests.total")
+    w.writeString(2, "Total HTTP requests")
+    w.writeString(3, "{request}")
+    w.writeEmbedded(7, sumW)        # sum (Metric.sum = field 7)
+    check w.buf == readBin("tests/fixtures/proto/counter_metric.bin")
+
+  test "log_record.bin — fixed64 times, severity, body AnyValue, fixed32 flags, trace/span ids":
+    # log: time=10^18, observed=10^18+10^8, severity=INFO(9), text="INFO",
+    #      body=string("user login succeeded"), 3 attrs, flags=1 (fixed32),
+    #      trace_id=TID, span_id=SID, observed at field 11
+    var bodyW: ProtoWriter
+    bodyW.writeString(1, "user login succeeded")  # AnyValue string_value
+
+    var w: ProtoWriter
+    w.writeFixed64(1, 1_000_000_000_000_000_000'u64)   # time_unix_nano     field 1
+    w.writeInt32(2, 9'i32)                              # severity_number    field 2 (INFO=9)
+    w.writeString(3, "INFO")                            # severity_text      field 3
+    w.writeEmbedded(5, bodyW)                           # body               field 5
+    encodeKVs(w, 6, [                                   # attributes         field 6
+      KeyValue(key: "user.id", value: AnyValue(kind: avString, strVal: "u-99999")),
+      KeyValue(key: "ip",      value: AnyValue(kind: avString, strVal: "192.168.1.1")),
+      KeyValue(key: "attempt", value: AnyValue(kind: avInt,    intVal: 1'i64)),
+    ])
+    w.writeFixed32(8, 1'u32)                            # flags (fixed32!)   field 8
+    w.writeBytes(9, TID)                                # trace_id           field 9
+    w.writeBytes(10, SID)                               # span_id            field 10
+    w.writeFixed64(11, 1_000_000_000_100_000_000'u64)  # observed_time      field 11
+    check w.buf == readBin("tests/fixtures/proto/log_record.bin")
