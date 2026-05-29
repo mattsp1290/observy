@@ -29,6 +29,7 @@ const
   SigProfiles* = 3
 
   defaultEndpoint = "http://localhost:4318"
+  # Profiles uses /v1development/profiles (experimental path, not /v1/profiles).
   signalPaths     = ["/v1/traces", "/v1/metrics", "/v1/logs", "/v1development/profiles"]
   signalEnvKeys   = [
     "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
@@ -76,10 +77,13 @@ proc loadFromEnv*(): ExporterConfig =
 
   result.serviceName = getEnv("OTEL_SERVICE_NAME").strip()
 
+  # OTEL_RESOURCE_ATTRIBUTES: plain k=v (no percent-encoding per spec).
+  # OTEL_EXPORTER_OTLP_HEADERS uses percent-encoding (W3C Baggage convention).
   result.resourceAttributes = parseKVPairs(getEnv("OTEL_RESOURCE_ATTRIBUTES"), percentDecodeValues = false)
 
   result.compression = case getEnv("OTEL_EXPORTER_OTLP_COMPRESSION").strip().toLowerAscii()
     of "gzip": compGzip
     else:      compNone
 
+  # 300 s (5 min) is the OTLP spec default; not wired to an env var intentionally.
   result.maxRetryElapsed = 300

@@ -75,11 +75,11 @@ proc jsonEncodeAnyValue*(v: AnyValue): string =
   of avBool:
     if v.boolVal: "{\"boolValue\":true}" else: "{\"boolValue\":false}"
   of avInt:
-    "{\"intValue\":\"" & $v.intVal & "\"}"
+    "{\"intValue\":" & jsonEncodeInt64(v.intVal) & "}"
   of avDouble:
     "{\"doubleValue\":" & jsonEncodeDouble(v.dblVal) & "}"
   of avBytes:
-    "{\"bytesValue\":" & jsonEscape(encode(v.bytesVal)) & "}"
+    "{\"bytesValue\":" & jsonEscape(base64Encode(v.bytesVal)) & "}"
   of avArray:
     var elems = "["
     for i, elem in v.arrayVal:

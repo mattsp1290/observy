@@ -1,8 +1,8 @@
 # Resource type (labeled key-value attributes for a telemetry source)
-import std/base64
-import std/math
 import ./anyvalue
 import ./proto
+import ./json_encode
+export json_encode
 
 # opentelemetry-proto v1.10.0 field numbers
 # common/v1/common.proto
@@ -25,39 +25,6 @@ type
     version*:                 string
     attributes*:              AttributeSet
     droppedAttributesCount*:  uint32
-
-# ---------------------------------------------------------------------------
-# JSON helpers
-# ---------------------------------------------------------------------------
-
-proc jsonEscape*(s: string): string =
-  result = "\""
-  for c in s:
-    case c
-    of '"':  result.add("\\\"")
-    of '\\': result.add("\\\\")
-    of '\b': result.add("\\b")
-    of '\f': result.add("\\f")
-    of '\n': result.add("\\n")
-    of '\r': result.add("\\r")
-    of '\t': result.add("\\t")
-    else:
-      if ord(c) < 0x20:
-        result.add("\\u00")
-        let hi = ord(c) shr 4
-        let lo = ord(c) and 0xF
-        result.add(chr(if hi < 10: ord('0') + hi else: ord('a') + hi - 10))
-        result.add(chr(if lo < 10: ord('0') + lo else: ord('a') + lo - 10))
-      else:
-        result.add(c)
-  result.add("\"")
-
-proc jsonDouble*(v: float64): string =
-  if isNaN(v): return "\"NaN\""
-  case classify(v)
-  of fcInf:    return "\"Infinity\""
-  of fcNegInf: return "\"-Infinity\""
-  else:        $v
 
 # ---------------------------------------------------------------------------
 # Proto encode
@@ -111,40 +78,8 @@ proc protoEncode*(s: InstrumentationScope): seq[byte] =
   w.buf
 
 # ---------------------------------------------------------------------------
-# JSON encode
+# JSON encode (jsonEscape / jsonEncodeAnyValue / jsonEncodeKeyValue from json_encode)
 # ---------------------------------------------------------------------------
-
-proc jsonEncodeAnyValue*(v: AnyValue): string
-
-proc jsonEncodeKeyValue*(kv: KeyValue): string =
-  "{\"key\":" & jsonEscape(kv.key) & ",\"value\":" & jsonEncodeAnyValue(kv.value) & "}"
-
-proc jsonEncodeAnyValue*(v: AnyValue): string =
-  case v.kind
-  of avString:
-    "{\"stringValue\":" & jsonEscape(v.strVal) & "}"
-  of avBool:
-    if v.boolVal: "{\"boolValue\":true}" else: "{\"boolValue\":false}"
-  of avInt:
-    "{\"intValue\":\"" & $v.intVal & "\"}"
-  of avDouble:
-    "{\"doubleValue\":" & jsonDouble(v.dblVal) & "}"
-  of avBytes:
-    "{\"bytesValue\":" & jsonEscape(encode(v.bytesVal)) & "}"
-  of avArray:
-    var elems = "["
-    for i, elem in v.arrayVal:
-      if i > 0: elems.add(",")
-      elems.add(jsonEncodeAnyValue(elem))
-    elems.add("]")
-    "{\"arrayValue\":{\"values\":" & elems & "}}"
-  of avKvList:
-    var kvs = "["
-    for i, kv in v.kvlistVal:
-      if i > 0: kvs.add(",")
-      kvs.add(jsonEncodeKeyValue(kv))
-    kvs.add("]")
-    "{\"kvlistValue\":{\"values\":" & kvs & "}}"
 
 proc jsonEncodeAttributes(pairs: openArray[KeyValue]): string =
   result = "["
