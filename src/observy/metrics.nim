@@ -1,5 +1,6 @@
 # Metrics signal data model and OTLP encoding
 import std/options
+import std/strutils
 import ./anyvalue
 import ./traces
 import ./proto
@@ -256,6 +257,9 @@ proc protoEncodeMetric*(w: var ProtoWriter; m: Metric) =
   w.writeString(1, m.name)
   w.writeString(2, m.description)
   w.writeString(3, m.unit)
+  # The data field is a proto3 oneof — its member must serialize even when empty
+  # (e.g. a Gauge with no data points emits `5: {}`) so the receiver can still
+  # tell which metric type was set. Hence writeEmbeddedForce, not writeEmbedded.
   case m.kind
   of mkGauge:
     var g: ProtoWriter
@@ -263,7 +267,7 @@ proc protoEncodeMetric*(w: var ProtoWriter; m: Metric) =
       var d: ProtoWriter
       protoEncodeNumberDataPoint(d, dp)
       g.writeEmbedded(1, d)
-    w.writeEmbedded(5, g)
+    w.writeEmbeddedForce(5, g)
   of mkSum:
     var s: ProtoWriter
     for dp in m.sum.dataPoints:
@@ -272,7 +276,7 @@ proc protoEncodeMetric*(w: var ProtoWriter; m: Metric) =
       s.writeEmbedded(1, d)
     s.writeInt32(2, int32(m.sum.aggregationTemporality))
     s.writeBool(3, m.sum.isMonotonic)
-    w.writeEmbedded(7, s)
+    w.writeEmbeddedForce(7, s)
   of mkHistogram:
     var h: ProtoWriter
     for dp in m.histogram.dataPoints:
@@ -280,7 +284,7 @@ proc protoEncodeMetric*(w: var ProtoWriter; m: Metric) =
       protoEncodeHistogramDataPoint(d, dp)
       h.writeEmbedded(1, d)
     h.writeInt32(2, int32(m.histogram.aggregationTemporality))
-    w.writeEmbedded(9, h)
+    w.writeEmbeddedForce(9, h)
   of mkExpHistogram:
     var h: ProtoWriter
     for dp in m.expHistogram.dataPoints:
@@ -288,24 +292,37 @@ proc protoEncodeMetric*(w: var ProtoWriter; m: Metric) =
       protoEncodeExpHistogramDataPoint(d, dp)
       h.writeEmbedded(1, d)
     h.writeInt32(2, int32(m.expHistogram.aggregationTemporality))
-    w.writeEmbedded(10, h)
+    w.writeEmbeddedForce(10, h)
   of mkSummary:
     var s: ProtoWriter
     for dp in m.summary.dataPoints:
       var d: ProtoWriter
       protoEncodeSummaryDataPoint(d, dp)
       s.writeEmbedded(1, d)
-    w.writeEmbedded(11, s)
+    w.writeEmbeddedForce(11, s)
   protoEncodeKeyValues(w, 12, m.metadata)
 
 # ---------------------------------------------------------------------------
 # JSON encoding
 #
-# OTLP-JSON number/string rules:
+# OTLP-JSON number/string rules (verified against Python SDK MessageToJson):
 #   count / asInt / zeroCount / bucketCounts(both) : JSON string (64-bit ints)
 #   scale / offset / flags / aggregationTemporality: JSON number
 #   sum / min / max / explicitBounds / quantile / value / zeroThreshold: JSON number
+# Proto3-default scalar values are OMITTED (matching MessageToJson and the proto
+# encoders' zero-suppression). A small field-builder handles comma joining and
+# presence so each encoder just lists the fields it wants.
 # ---------------------------------------------------------------------------
+
+type JsonObj = object
+  parts: seq[string]
+
+proc field(o: var JsonObj; key, valJson: string) =
+  ## Append a field unconditionally (caller already decided it should appear).
+  o.parts.add("\"" & key & "\":" & valJson)
+
+proc str(o: JsonObj): string =
+  "{" & o.parts.join(",") & "}"
 
 proc jsonU64Array(vs: openArray[uint64]): string =
   result = "["
@@ -321,160 +338,135 @@ proc jsonF64Array(vs: openArray[float64]): string =
     result.add(jsonEncodeDouble(v))   # numbers (or "NaN"/"Infinity")
   result.add("]")
 
-proc jsonEncodeExemplar(e: Exemplar): string =
-  result = "{\"timeUnixNano\":" & jsonEncodeUint64(e.timeUnixNano)
+proc jsonArrayOf[T](items: openArray[T]; encode: proc (x: T): string): string =
+  result = "["
+  for i, x in items:
+    if i > 0: result.add(",")
+    result.add(encode(x))
+  result.add("]")
+
+proc jsonEncodeExemplar*(e: Exemplar): string =
+  var o: JsonObj
+  if e.timeUnixNano != 0: o.field("timeUnixNano", jsonEncodeUint64(e.timeUnixNano))
   case e.kind
-  of evDouble: result.add(",\"asDouble\":" & jsonEncodeDouble(e.doubleValue))
-  of evInt:    result.add(",\"asInt\":" & jsonEncodeInt64(e.intValue))
-  if not isAllZero(e.spanId):
-    result.add(",\"spanId\":\"" & hexEncodeSpanId(e.spanId) & "\"")
-  if not isAllZero(e.traceId):
-    result.add(",\"traceId\":\"" & hexEncodeTraceId(e.traceId) & "\"")
+  of evDouble: o.field("asDouble", jsonEncodeDouble(e.doubleValue))   # oneof: always
+  of evInt:    o.field("asInt", jsonEncodeInt64(e.intValue))
+  if not isAllZero(e.spanId):  o.field("spanId", "\"" & hexEncodeSpanId(e.spanId) & "\"")
+  if not isAllZero(e.traceId): o.field("traceId", "\"" & hexEncodeTraceId(e.traceId) & "\"")
   if e.filteredAttributes.len > 0:
-    result.add(",\"filteredAttributes\":" & jsonEncodeKVList(e.filteredAttributes))
-  result.add("}")
+    o.field("filteredAttributes", jsonEncodeKVList(e.filteredAttributes))
+  o.str
 
 proc jsonExemplars(exs: openArray[Exemplar]): string =
-  result = "["
-  for i, e in exs:
-    if i > 0: result.add(",")
-    result.add(jsonEncodeExemplar(e))
-  result.add("]")
+  jsonArrayOf(exs, jsonEncodeExemplar)
 
-proc jsonEncodeNumberDataPoint(dp: NumberDataPoint): string =
-  result = "{\"startTimeUnixNano\":" & jsonEncodeUint64(dp.startTimeUnixNano)
-  result.add(",\"timeUnixNano\":" & jsonEncodeUint64(dp.timeUnixNano))
-  case dp.kind
-  of ndpDouble: result.add(",\"asDouble\":" & jsonEncodeDouble(dp.doubleValue))
-  of ndpInt:    result.add(",\"asInt\":" & jsonEncodeInt64(dp.intValue))
-  if dp.attributes.pairs.len > 0:
-    result.add(",\"attributes\":" & jsonEncodeKVList(dp.attributes.pairs))
-  if dp.exemplars.len > 0:
-    result.add(",\"exemplars\":" & jsonExemplars(dp.exemplars))
-  if dp.flags != 0:
-    result.add(",\"flags\":" & $dp.flags)
-  result.add("}")
+proc jsonEncodeNumberDataPoint*(dp: NumberDataPoint): string =
+  var o: JsonObj
+  if dp.startTimeUnixNano != 0: o.field("startTimeUnixNano", jsonEncodeUint64(dp.startTimeUnixNano))
+  if dp.timeUnixNano != 0:      o.field("timeUnixNano", jsonEncodeUint64(dp.timeUnixNano))
+  case dp.kind                                            # value oneof: always emit
+  of ndpDouble: o.field("asDouble", jsonEncodeDouble(dp.doubleValue))
+  of ndpInt:    o.field("asInt", jsonEncodeInt64(dp.intValue))
+  if dp.attributes.pairs.len > 0: o.field("attributes", jsonEncodeKVList(dp.attributes.pairs))
+  if dp.exemplars.len > 0:        o.field("exemplars", jsonExemplars(dp.exemplars))
+  if dp.flags != 0:               o.field("flags", $dp.flags)
+  o.str
 
-proc jsonEncodeHistogramDataPoint(dp: HistogramDataPoint): string =
-  result = "{\"startTimeUnixNano\":" & jsonEncodeUint64(dp.startTimeUnixNano)
-  result.add(",\"timeUnixNano\":" & jsonEncodeUint64(dp.timeUnixNano))
-  result.add(",\"count\":" & jsonEncodeUint64(dp.count))
-  if dp.sum.isSome: result.add(",\"sum\":" & jsonEncodeDouble(dp.sum.get))
-  if dp.bucketCounts.len > 0:
-    result.add(",\"bucketCounts\":" & jsonU64Array(dp.bucketCounts))
-  if dp.explicitBounds.len > 0:
-    result.add(",\"explicitBounds\":" & jsonF64Array(dp.explicitBounds))
-  if dp.exemplars.len > 0:
-    result.add(",\"exemplars\":" & jsonExemplars(dp.exemplars))
-  if dp.attributes.pairs.len > 0:
-    result.add(",\"attributes\":" & jsonEncodeKVList(dp.attributes.pairs))
-  if dp.flags != 0:
-    result.add(",\"flags\":" & $dp.flags)
-  if dp.min.isSome: result.add(",\"min\":" & jsonEncodeDouble(dp.min.get))
-  if dp.max.isSome: result.add(",\"max\":" & jsonEncodeDouble(dp.max.get))
-  result.add("}")
+proc jsonEncodeHistogramDataPoint*(dp: HistogramDataPoint): string =
+  var o: JsonObj
+  if dp.startTimeUnixNano != 0: o.field("startTimeUnixNano", jsonEncodeUint64(dp.startTimeUnixNano))
+  if dp.timeUnixNano != 0:      o.field("timeUnixNano", jsonEncodeUint64(dp.timeUnixNano))
+  if dp.count != 0:             o.field("count", jsonEncodeUint64(dp.count))
+  if dp.sum.isSome:             o.field("sum", jsonEncodeDouble(dp.sum.get))
+  if dp.bucketCounts.len > 0:   o.field("bucketCounts", jsonU64Array(dp.bucketCounts))
+  if dp.explicitBounds.len > 0: o.field("explicitBounds", jsonF64Array(dp.explicitBounds))
+  if dp.exemplars.len > 0:      o.field("exemplars", jsonExemplars(dp.exemplars))
+  if dp.attributes.pairs.len > 0: o.field("attributes", jsonEncodeKVList(dp.attributes.pairs))
+  if dp.flags != 0:             o.field("flags", $dp.flags)
+  if dp.min.isSome:             o.field("min", jsonEncodeDouble(dp.min.get))
+  if dp.max.isSome:             o.field("max", jsonEncodeDouble(dp.max.get))
+  o.str
+
+proc bucketsNonEmpty(b: ExponentialHistogramBuckets): bool =
+  b.offset != 0 or b.bucketCounts.len > 0
 
 proc jsonEncodeBuckets(b: ExponentialHistogramBuckets): string =
-  result = "{"
-  var n = 0
-  if b.offset != 0:
-    result.add("\"offset\":" & $b.offset); inc n
-  if b.bucketCounts.len > 0:
-    if n > 0: result.add(",")
-    result.add("\"bucketCounts\":" & jsonU64Array(b.bucketCounts))
-  result.add("}")
+  var o: JsonObj
+  if b.offset != 0:           o.field("offset", $b.offset)
+  if b.bucketCounts.len > 0:  o.field("bucketCounts", jsonU64Array(b.bucketCounts))
+  o.str
 
-proc jsonEncodeExpHistogramDataPoint(dp: ExponentialHistogramDataPoint): string =
-  result = "{\"startTimeUnixNano\":" & jsonEncodeUint64(dp.startTimeUnixNano)
-  result.add(",\"timeUnixNano\":" & jsonEncodeUint64(dp.timeUnixNano))
-  result.add(",\"count\":" & jsonEncodeUint64(dp.count))
-  if dp.sum.isSome: result.add(",\"sum\":" & jsonEncodeDouble(dp.sum.get))
-  result.add(",\"scale\":" & $dp.scale)
-  result.add(",\"zeroCount\":" & jsonEncodeUint64(dp.zeroCount))
-  result.add(",\"positive\":" & jsonEncodeBuckets(dp.positive))
-  if dp.negative.offset != 0 or dp.negative.bucketCounts.len > 0:
-    result.add(",\"negative\":" & jsonEncodeBuckets(dp.negative))
-  if dp.exemplars.len > 0:
-    result.add(",\"exemplars\":" & jsonExemplars(dp.exemplars))
-  if dp.attributes.pairs.len > 0:
-    result.add(",\"attributes\":" & jsonEncodeKVList(dp.attributes.pairs))
-  if dp.flags != 0:
-    result.add(",\"flags\":" & $dp.flags)
-  if dp.min.isSome: result.add(",\"min\":" & jsonEncodeDouble(dp.min.get))
-  if dp.max.isSome: result.add(",\"max\":" & jsonEncodeDouble(dp.max.get))
-  if dp.zeroThreshold != 0.0:
-    result.add(",\"zeroThreshold\":" & jsonEncodeDouble(dp.zeroThreshold))
-  result.add("}")
+proc jsonEncodeExpHistogramDataPoint*(dp: ExponentialHistogramDataPoint): string =
+  var o: JsonObj
+  if dp.startTimeUnixNano != 0: o.field("startTimeUnixNano", jsonEncodeUint64(dp.startTimeUnixNano))
+  if dp.timeUnixNano != 0:      o.field("timeUnixNano", jsonEncodeUint64(dp.timeUnixNano))
+  if dp.count != 0:             o.field("count", jsonEncodeUint64(dp.count))
+  if dp.sum.isSome:             o.field("sum", jsonEncodeDouble(dp.sum.get))
+  if dp.scale != 0:             o.field("scale", $dp.scale)
+  if dp.zeroCount != 0:         o.field("zeroCount", jsonEncodeUint64(dp.zeroCount))
+  if bucketsNonEmpty(dp.positive): o.field("positive", jsonEncodeBuckets(dp.positive))
+  if bucketsNonEmpty(dp.negative): o.field("negative", jsonEncodeBuckets(dp.negative))
+  if dp.exemplars.len > 0:      o.field("exemplars", jsonExemplars(dp.exemplars))
+  if dp.attributes.pairs.len > 0: o.field("attributes", jsonEncodeKVList(dp.attributes.pairs))
+  if dp.flags != 0:             o.field("flags", $dp.flags)
+  if dp.min.isSome:             o.field("min", jsonEncodeDouble(dp.min.get))
+  if dp.max.isSome:             o.field("max", jsonEncodeDouble(dp.max.get))
+  if dp.zeroThreshold != 0.0:   o.field("zeroThreshold", jsonEncodeDouble(dp.zeroThreshold))
+  o.str
 
-proc jsonEncodeSummaryDataPoint(dp: SummaryDataPoint): string =
-  result = "{\"startTimeUnixNano\":" & jsonEncodeUint64(dp.startTimeUnixNano)
-  result.add(",\"timeUnixNano\":" & jsonEncodeUint64(dp.timeUnixNano))
-  result.add(",\"count\":" & jsonEncodeUint64(dp.count))
-  result.add(",\"sum\":" & jsonEncodeDouble(dp.sum))
+proc jsonEncodeValueAtQuantile(q: ValueAtQuantile): string =
+  var o: JsonObj
+  if q.quantile != 0.0: o.field("quantile", jsonEncodeDouble(q.quantile))
+  if q.value != 0.0:    o.field("value", jsonEncodeDouble(q.value))
+  o.str
+
+proc jsonEncodeSummaryDataPoint*(dp: SummaryDataPoint): string =
+  var o: JsonObj
+  if dp.startTimeUnixNano != 0: o.field("startTimeUnixNano", jsonEncodeUint64(dp.startTimeUnixNano))
+  if dp.timeUnixNano != 0:      o.field("timeUnixNano", jsonEncodeUint64(dp.timeUnixNano))
+  if dp.count != 0:             o.field("count", jsonEncodeUint64(dp.count))
+  if dp.sum != 0.0:             o.field("sum", jsonEncodeDouble(dp.sum))  # plain (non-optional) double
   if dp.quantileValues.len > 0:
-    var qs = "["
-    for i, q in dp.quantileValues:
-      if i > 0: qs.add(",")
-      qs.add("{\"quantile\":" & jsonEncodeDouble(q.quantile) &
-             ",\"value\":" & jsonEncodeDouble(q.value) & "}")
-    qs.add("]")
-    result.add(",\"quantileValues\":" & qs)
-  if dp.attributes.pairs.len > 0:
-    result.add(",\"attributes\":" & jsonEncodeKVList(dp.attributes.pairs))
-  if dp.flags != 0:
-    result.add(",\"flags\":" & $dp.flags)
-  result.add("}")
-
-proc numberDataPointsJson(dps: openArray[NumberDataPoint]): string =
-  result = "["
-  for i, dp in dps:
-    if i > 0: result.add(",")
-    result.add(jsonEncodeNumberDataPoint(dp))
-  result.add("]")
+    o.field("quantileValues", jsonArrayOf(dp.quantileValues, jsonEncodeValueAtQuantile))
+  if dp.attributes.pairs.len > 0: o.field("attributes", jsonEncodeKVList(dp.attributes.pairs))
+  if dp.flags != 0:             o.field("flags", $dp.flags)
+  o.str
 
 proc jsonEncodeMetric*(m: Metric): string =
-  result = "{\"name\":" & jsonEscape(m.name)
-  if m.description.len > 0:
-    result.add(",\"description\":" & jsonEscape(m.description))
-  if m.unit.len > 0:
-    result.add(",\"unit\":" & jsonEscape(m.unit))
+  var o: JsonObj
+  o.field("name", jsonEscape(m.name))
+  if m.description.len > 0: o.field("description", jsonEscape(m.description))
+  if m.unit.len > 0:        o.field("unit", jsonEscape(m.unit))
   case m.kind
   of mkGauge:
-    result.add(",\"gauge\":{\"dataPoints\":" &
-               numberDataPointsJson(m.gauge.dataPoints) & "}")
+    var g: JsonObj
+    g.field("dataPoints", jsonArrayOf(m.gauge.dataPoints, jsonEncodeNumberDataPoint))
+    o.field("gauge", g.str)
   of mkSum:
-    result.add(",\"sum\":{\"dataPoints\":" & numberDataPointsJson(m.sum.dataPoints))
-    result.add(",\"aggregationTemporality\":" & $int(m.sum.aggregationTemporality))
-    if m.sum.isMonotonic: result.add(",\"isMonotonic\":true")
-    result.add("}")
+    var s: JsonObj
+    s.field("dataPoints", jsonArrayOf(m.sum.dataPoints, jsonEncodeNumberDataPoint))
+    if m.sum.aggregationTemporality != aggTempUnspecified:
+      s.field("aggregationTemporality", $int(m.sum.aggregationTemporality))
+    if m.sum.isMonotonic: s.field("isMonotonic", "true")
+    o.field("sum", s.str)
   of mkHistogram:
-    var dps = "["
-    for i, dp in m.histogram.dataPoints:
-      if i > 0: dps.add(",")
-      dps.add(jsonEncodeHistogramDataPoint(dp))
-    dps.add("]")
-    result.add(",\"histogram\":{\"dataPoints\":" & dps)
-    result.add(",\"aggregationTemporality\":" & $int(m.histogram.aggregationTemporality))
-    result.add("}")
+    var h: JsonObj
+    h.field("dataPoints", jsonArrayOf(m.histogram.dataPoints, jsonEncodeHistogramDataPoint))
+    if m.histogram.aggregationTemporality != aggTempUnspecified:
+      h.field("aggregationTemporality", $int(m.histogram.aggregationTemporality))
+    o.field("histogram", h.str)
   of mkExpHistogram:
-    var dps = "["
-    for i, dp in m.expHistogram.dataPoints:
-      if i > 0: dps.add(",")
-      dps.add(jsonEncodeExpHistogramDataPoint(dp))
-    dps.add("]")
-    result.add(",\"exponentialHistogram\":{\"dataPoints\":" & dps)
-    result.add(",\"aggregationTemporality\":" & $int(m.expHistogram.aggregationTemporality))
-    result.add("}")
+    var h: JsonObj
+    h.field("dataPoints", jsonArrayOf(m.expHistogram.dataPoints, jsonEncodeExpHistogramDataPoint))
+    if m.expHistogram.aggregationTemporality != aggTempUnspecified:
+      h.field("aggregationTemporality", $int(m.expHistogram.aggregationTemporality))
+    o.field("exponentialHistogram", h.str)
   of mkSummary:
-    var dps = "["
-    for i, dp in m.summary.dataPoints:
-      if i > 0: dps.add(",")
-      dps.add(jsonEncodeSummaryDataPoint(dp))
-    dps.add("]")
-    result.add(",\"summary\":{\"dataPoints\":" & dps & "}")
-  if m.metadata.len > 0:
-    result.add(",\"metadata\":" & jsonEncodeKVList(m.metadata))
-  result.add("}")
+    var s: JsonObj
+    s.field("dataPoints", jsonArrayOf(m.summary.dataPoints, jsonEncodeSummaryDataPoint))
+    o.field("summary", s.str)
+  if m.metadata.len > 0: o.field("metadata", jsonEncodeKVList(m.metadata))
+  o.str
 
 proc metricToJson*(res: Resource; scope: InstrumentationScope;
                    metrics: seq[Metric]): string =

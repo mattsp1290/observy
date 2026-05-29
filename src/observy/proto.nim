@@ -101,6 +101,10 @@ proc writeDouble*(w: var ProtoWriter; fieldNumber: uint32; v: float64) =
   for i in 0 ..< 8:
     w.buf.add(byte((bits shr (i * 8)) and 0xFF))
 
+# The *Force variants below are the suppression-free twins of writeDouble/
+# writeFixed64/writeEmbedded: they always emit, for proto3 fields whose presence
+# is explicit (optional doubles, oneof members) and must survive a zero/empty value.
+
 proc writeDoubleForce*(w: var ProtoWriter; fieldNumber: uint32; v: float64) =
   ## Write a double even when its value is 0.0 — for proto3 `optional double`
   ## fields whose presence is explicit (e.g. HistogramDataPoint.sum/min/max).
@@ -130,6 +134,14 @@ proc writeString*(w: var ProtoWriter; fieldNumber: uint32; v: string) =
 
 proc writeEmbedded*(w: var ProtoWriter; fieldNumber: uint32; inner: ProtoWriter) =
   if inner.buf.len == 0: return
+  w.writeTag(fieldNumber, WireLen)
+  w.writeVarint(uint64(inner.buf.len))
+  for b in inner.buf: w.buf.add(b)
+
+proc writeEmbeddedForce*(w: var ProtoWriter; fieldNumber: uint32; inner: ProtoWriter) =
+  ## Embed a length-delimited sub-message even when it is empty — required for a
+  ## set oneof member (e.g. an empty Metric.gauge {}), where omitting the field
+  ## would erase the discriminator that tells the receiver which case was set.
   w.writeTag(fieldNumber, WireLen)
   w.writeVarint(uint64(inner.buf.len))
   for b in inner.buf: w.buf.add(b)
