@@ -1,0 +1,1 @@
+# OTLP/HTTP exporter core
