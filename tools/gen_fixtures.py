@@ -231,11 +231,10 @@ def gen_proto():
     )
     write_bin("summary_metric.bin", summary)
 
-    # log_record.bin — all LogRecord fields available in this SDK version.
-    # NOTE: event_name (field 12) is absent from this fixture because opentelemetry-api
-    # 1.31.1 bundles an older proto that lacks it. Once the SDK is updated to include
-    # opentelemetry-proto >= 1.10.0, regenerate with event_name="user.login" added.
-    # Tracked in beads issue observy-event-name-fixture (TODO: file after merge).
+    # log_record.bin — all LogRecord fields, including event_name (field 12).
+    # event_name requires opentelemetry-proto >= 1.10.0 (the proto release that
+    # added the field). Regenerated under observy-4fz with a proto bundle that
+    # carries it; run gen_fixtures.py against opentelemetry-proto >= 1.10.0.
     log = LogRecord(
         time_unix_nano=1_000_000_000_000_000_000,
         observed_time_unix_nano=1_000_000_000_100_000_000,
@@ -251,6 +250,7 @@ def gen_proto():
         flags=1,
         trace_id=tid,
         span_id=sid,
+        event_name="user.login",
     )
     write_bin("log_record.bin", log)
 

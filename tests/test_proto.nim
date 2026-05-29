@@ -450,4 +450,5 @@ suite "golden-byte proto fixtures":
     w.writeBytes(9, TID)                                # trace_id           field 9
     w.writeBytes(10, SID)                               # span_id            field 10
     w.writeFixed64(11, 1_000_000_000_100_000_000'u64)  # observed_time      field 11
+    w.writeString(12, "user.login")                     # event_name         field 12 (observy-4fz)
     check w.buf == readBin("tests/fixtures/proto/log_record.bin")

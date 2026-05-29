@@ -134,6 +134,7 @@ proc makeLogRecord(): LogRecord =
     flags:                1'u32,
     traceId:              TID,
     spanId:               SID,
+    eventName:            "user.login",   # field 12 (observy-4fz)
   )
 
 suite "Logs proto encoding":
@@ -163,6 +164,18 @@ suite "Logs proto encoding":
     let fields = protoFieldNumbers(w.buf)
     check 9'u32 in fields
     check 10'u32 in fields
+
+  test "eventName encoded at field 12 (observy-4fz)":
+    # makeLogRecord sets eventName='user.login'; the golden log_record.bin
+    # (regenerated from opentelemetry-proto >= 1.10.0) carries field 12, so the
+    # encoder must emit it. A context-less record with no eventName omits it.
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, makeLogRecord())
+    check 12'u32 in protoFieldNumbers(w.buf)
+    var w2: ProtoWriter
+    protoEncodeLogRecord(w2, LogRecord(timeUnixNano: 1'u64,
+                                       attributes: initAttributeSet()))
+    check 12'u32 notin protoFieldNumbers(w2.buf)   # empty eventName suppressed
 
 suite "Logs JSON encoding":
   test "jsonEncodeLogRecord produces valid JSON with severity and body":
