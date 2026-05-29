@@ -9,14 +9,13 @@
 #
 # The core state machine (retryLoop) takes injectable clock/sleep/jitter hooks
 # and a send thunk, so it is fully unit-testable with a fake clock and no network.
-import std/httpcore
 import std/strutils
 import std/times
 import std/monotimes
 import std/random
 import std/os
 import ./config
-import ./exporter_http
+import ./exporter_http   # also brings HttpCode (exporter_http exports httpcore)
 
 const
   initialDelaySec = 1.0
