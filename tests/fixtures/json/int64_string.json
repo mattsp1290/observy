@@ -1,0 +1,8 @@
+{
+  "_comment": "int64/uint64 fields MUST be JSON strings to preserve precision",
+  "startTimeUnixNano": "1000000000000000000",
+  "endTimeUnixNano": "1000000001000000000",
+  "intAttribute": {
+    "intValue": "9223372036854775807"
+  }
+}

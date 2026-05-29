@@ -1,0 +1,80 @@
+{
+  "traceId": "4bf92f3577b34da6a3ce929d0e0e4736",
+  "spanId": "00f067aa0ba902b7",
+  "parentSpanId": "aabbccdd11223344",
+  "traceState": "rojo=00f067aa0ba902b7",
+  "name": "POST /api/users",
+  "kind": 2,
+  "startTimeUnixNano": "1000000000000000000",
+  "endTimeUnixNano": "1000000002000000000",
+  "attributes": [
+    {
+      "key": "http.method",
+      "value": {
+        "stringValue": "POST"
+      }
+    },
+    {
+      "key": "http.url",
+      "value": {
+        "stringValue": "https://api.example.com/users"
+      }
+    },
+    {
+      "key": "http.status_code",
+      "value": {
+        "intValue": "201"
+      }
+    },
+    {
+      "key": "latency.ms",
+      "value": {
+        "doubleValue": 12.5
+      }
+    },
+    {
+      "key": "http.success",
+      "value": {
+        "boolValue": true
+      }
+    },
+    {
+      "key": "request.id",
+      "value": {
+        "bytesValue": "AQIDBA=="
+      }
+    }
+  ],
+  "events": [
+    {
+      "timeUnixNano": "1000000000500000000",
+      "name": "user.created",
+      "attributes": [
+        {
+          "key": "user.id",
+          "value": {
+            "stringValue": "u-12345"
+          }
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "traceId": "ffffffffffffffffffffffffffffffff",
+      "spanId": "1122334455667788",
+      "attributes": [
+        {
+          "key": "link.type",
+          "value": {
+            "stringValue": "child_of"
+          }
+        }
+      ]
+    }
+  ],
+  "status": {
+    "code": 1
+  },
+  "flags": 1
+}

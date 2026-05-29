@@ -1,0 +1,11 @@
+{
+  "_comment": "bytes attribute uses standard base64 (no URL-safe, no line breaks)",
+  "attributes": [
+    {
+      "key": "request.id",
+      "value": {
+        "bytesValue": "AQIDBA=="
+      }
+    }
+  ]
+}
