@@ -89,3 +89,18 @@ suite "Logs data model":
     var zeroSid: SpanId
     check rec.traceId == zeroTid
     check rec.spanId == zeroSid
+
+  test "LogRecord eventName field":
+    let rec = LogRecord(
+      body: AnyValue(kind: avString, strVal: "my.event occurred"),
+      attributes: initAttributeSet(),
+      eventName: "my.event",
+    )
+    check rec.eventName == "my.event"
+
+  test "LogRecord eventName defaults to empty string":
+    let rec = LogRecord(
+      body: AnyValue(kind: avString, strVal: "plain log"),
+      attributes: initAttributeSet(),
+    )
+    check rec.eventName == ""

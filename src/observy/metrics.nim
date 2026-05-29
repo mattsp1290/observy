@@ -1,11 +1,12 @@
 # Metrics signal data model
+import std/options
 import ./anyvalue
 import ./traces
 
 # opentelemetry-proto v1.10.0 field numbers
 # metrics/v1/metrics.proto
 #   Metric: name=1, description=2, unit=3, gauge=5, sum=7, histogram=9,
-#           exponential_histogram=10, summary=11
+#           exponential_histogram=10, summary=11, metadata=12
 #   Gauge: data_points=1
 #   Sum: data_points=1, aggregation_temporality=2, is_monotonic=3
 #   Histogram: data_points=1, aggregation_temporality=2
@@ -19,7 +20,7 @@ import ./traces
 #   ExponentialHistogramDataPoint: attributes=1, start_time_unix_nano=2,
 #     time_unix_nano=3, count=4, sum=5, scale=6, zero_count=7, positive=8,
 #     negative=9, flags=10, exemplars=11, min=12, max=13, zero_threshold=14
-#   ExponentialHistogramDataPoint.Buckets: offset=1, bucket_counts=2
+#   ExponentialHistogramBuckets: offset=1, bucket_counts=2
 #   SummaryDataPoint: attributes=1, start_time_unix_nano=2, time_unix_nano=3,
 #                     count=4, sum=5, quantile_values=6, flags=7
 #   SummaryDataPoint.ValueAtQuantile: quantile=1, value=2
@@ -32,19 +33,25 @@ type
     aggTempDelta       = 1
     aggTempCumulative  = 2
 
+  ExemplarValueKind* = enum
+    evDouble
+    evInt
+
   Exemplar* = object
     filteredAttributes*: seq[KeyValue]
     timeUnixNano*:       uint64
-    value*:              float64
     spanId*:             SpanId
     traceId*:            TraceId
+    case kind*:          ExemplarValueKind
+    of evDouble: doubleValue*: float64
+    of evInt:    intValue*:    int64
 
   NumberDataPointValueKind* = enum
     ndpDouble
     ndpInt
 
   NumberDataPoint* = object
-    attributes*:        seq[KeyValue]
+    attributes*:        AttributeSet
     startTimeUnixNano*: uint64
     timeUnixNano*:      uint64
     exemplars*:         seq[Exemplar]
@@ -54,36 +61,36 @@ type
     of ndpInt:    intValue*:    int64
 
   HistogramDataPoint* = object
-    attributes*:        seq[KeyValue]
+    attributes*:        AttributeSet
     startTimeUnixNano*: uint64
     timeUnixNano*:      uint64
     count*:             uint64
-    sum*:               float64
+    sum*:               Option[float64]
     bucketCounts*:      seq[uint64]
     explicitBounds*:    seq[float64]
     exemplars*:         seq[Exemplar]
     flags*:             uint32
-    min*:               float64
-    max*:               float64
+    min*:               Option[float64]
+    max*:               Option[float64]
 
-  Buckets* = object
+  ExponentialHistogramBuckets* = object
     offset*:       int32
     bucketCounts*: seq[uint64]
 
   ExponentialHistogramDataPoint* = object
-    attributes*:        seq[KeyValue]
+    attributes*:        AttributeSet
     startTimeUnixNano*: uint64
     timeUnixNano*:      uint64
     count*:             uint64
-    sum*:               float64
+    sum*:               Option[float64]
     scale*:             int32
     zeroCount*:         uint64
-    positive*:          Buckets
-    negative*:          Buckets
+    positive*:          ExponentialHistogramBuckets
+    negative*:          ExponentialHistogramBuckets
     flags*:             uint32
     exemplars*:         seq[Exemplar]
-    min*:               float64
-    max*:               float64
+    min*:               Option[float64]
+    max*:               Option[float64]
     zeroThreshold*:     float64
 
   ValueAtQuantile* = object
@@ -91,7 +98,7 @@ type
     value*:    float64
 
   SummaryDataPoint* = object
-    attributes*:        seq[KeyValue]
+    attributes*:        AttributeSet
     startTimeUnixNano*: uint64
     timeUnixNano*:      uint64
     count*:             uint64
@@ -129,6 +136,7 @@ type
     name*:        string
     description*: string
     unit*:        string
+    metadata*:    seq[KeyValue]
     case kind*:   MetricKind
     of mkGauge:        gauge*:        MetricGauge
     of mkSum:          sum*:          MetricSum

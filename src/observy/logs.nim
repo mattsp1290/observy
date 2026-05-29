@@ -6,7 +6,7 @@ import ./traces
 # logs/v1/logs.proto
 #   LogRecord: time_unix_nano=1, severity_number=2, severity_text=3, body=5,
 #              attributes=6, dropped_attributes_count=7, flags=8, trace_id=9,
-#              span_id=10, observed_time_unix_nano=11
+#              span_id=10, observed_time_unix_nano=11, event_name=12
 
 type
   SeverityNumber* = enum
@@ -47,3 +47,4 @@ type
     flags*:                  uint32
     traceId*:                TraceId
     spanId*:                 SpanId
+    eventName*:              string

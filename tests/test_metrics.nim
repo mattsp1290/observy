@@ -1,4 +1,5 @@
 import unittest
+import std/options
 import ../src/observy/anyvalue
 import ../src/observy/traces
 import ../src/observy/metrics
@@ -9,7 +10,7 @@ suite "Metrics data model":
     check ord(aggTempDelta)       == 1
     check ord(aggTempCumulative)  == 2
 
-  test "Exemplar construction":
+  test "Exemplar double variant":
     var sid: SpanId
     var tid: TraceId
     sid[0] = 0x01'u8
@@ -17,18 +18,30 @@ suite "Metrics data model":
     let ex = Exemplar(
       filteredAttributes: @[KeyValue(key: "k", value: AnyValue(kind: avInt, intVal: 1))],
       timeUnixNano: 1000'u64,
-      value: 3.14,
       spanId: sid,
       traceId: tid,
+      kind: evDouble,
+      doubleValue: 3.14,
     )
-    check ex.value == 3.14
+    check ex.kind == evDouble
+    check ex.doubleValue == 3.14
     check ex.spanId[0] == 0x01'u8
     check ex.traceId[0] == 0x02'u8
     check ex.filteredAttributes.len == 1
 
+  test "Exemplar int variant":
+    let ex = Exemplar(
+      filteredAttributes: @[],
+      timeUnixNano: 500'u64,
+      kind: evInt,
+      intValue: -42'i64,
+    )
+    check ex.kind == evInt
+    check ex.intValue == -42'i64
+
   test "NumberDataPoint double variant":
     let dp = NumberDataPoint(
-      attributes: @[],
+      attributes: initAttributeSet(),
       startTimeUnixNano: 100'u64,
       timeUnixNano: 200'u64,
       exemplars: @[],
@@ -41,7 +54,7 @@ suite "Metrics data model":
 
   test "NumberDataPoint int variant":
     let dp = NumberDataPoint(
-      attributes: @[],
+      attributes: initAttributeSet(),
       startTimeUnixNano: 100'u64,
       timeUnixNano: 200'u64,
       exemplars: @[],
@@ -52,53 +65,72 @@ suite "Metrics data model":
     check dp.kind == ndpInt
     check dp.intValue == -7'i64
 
-  test "HistogramDataPoint construction":
+  test "HistogramDataPoint construction with optional sum/min/max":
     let dp = HistogramDataPoint(
-      attributes: @[],
+      attributes: initAttributeSet(),
       startTimeUnixNano: 0'u64,
       timeUnixNano: 1000'u64,
       count: 10'u64,
-      sum: 100.0,
+      sum: some(100.0),
       bucketCounts: @[2'u64, 3'u64, 5'u64],
       explicitBounds: @[1.0, 10.0],
       exemplars: @[],
       flags: 0'u32,
-      min: 1.0,
-      max: 50.0,
+      min: some(1.0),
+      max: some(50.0),
     )
     check dp.count == 10'u64
     check dp.bucketCounts.len == 3
     check dp.explicitBounds.len == 2
+    check dp.sum == some(100.0)
+    check dp.min == some(1.0)
+    check dp.max == some(50.0)
 
-  test "Buckets construction":
-    let b = Buckets(offset: -5'i32, bucketCounts: @[1'u64, 2'u64, 3'u64])
+  test "HistogramDataPoint with absent sum/min/max":
+    let dp = HistogramDataPoint(
+      attributes: initAttributeSet(),
+      startTimeUnixNano: 0'u64,
+      timeUnixNano: 1000'u64,
+      count: 5'u64,
+      bucketCounts: @[2'u64, 3'u64],
+      explicitBounds: @[5.0],
+      exemplars: @[],
+      flags: 0'u32,
+    )
+    check dp.sum.isNone
+    check dp.min.isNone
+    check dp.max.isNone
+
+  test "ExponentialHistogramBuckets construction":
+    let b = ExponentialHistogramBuckets(offset: -5'i32, bucketCounts: @[1'u64, 2'u64, 3'u64])
     check b.offset == -5'i32
     check b.bucketCounts.len == 3
 
   test "ExponentialHistogramDataPoint construction":
     let dp = ExponentialHistogramDataPoint(
-      attributes: @[],
+      attributes: initAttributeSet(),
       startTimeUnixNano: 0'u64,
       timeUnixNano: 1000'u64,
       count: 5'u64,
-      sum: 25.5,
+      sum: some(25.5),
       scale: 2'i32,
       zeroCount: 0'u64,
-      positive: Buckets(offset: 0'i32, bucketCounts: @[1'u64, 2'u64]),
-      negative: Buckets(offset: 0'i32, bucketCounts: @[]),
+      positive: ExponentialHistogramBuckets(offset: 0'i32, bucketCounts: @[1'u64, 2'u64]),
+      negative: ExponentialHistogramBuckets(offset: 0'i32, bucketCounts: @[]),
       flags: 0'u32,
       exemplars: @[],
-      min: 1.0,
-      max: 10.0,
+      min: some(1.0),
+      max: some(10.0),
       zeroThreshold: 0.0,
     )
     check dp.scale == 2'i32
     check dp.positive.bucketCounts.len == 2
     check dp.zeroCount == 0'u64
+    check dp.sum == some(25.5)
 
   test "SummaryDataPoint construction":
     let dp = SummaryDataPoint(
-      attributes: @[],
+      attributes: initAttributeSet(),
       startTimeUnixNano: 0'u64,
       timeUnixNano: 1000'u64,
       count: 100'u64,
@@ -115,7 +147,7 @@ suite "Metrics data model":
 
   test "MetricGauge construction":
     let dp = NumberDataPoint(
-      attributes: @[], startTimeUnixNano: 0'u64, timeUnixNano: 100'u64,
+      attributes: initAttributeSet(), startTimeUnixNano: 0'u64, timeUnixNano: 100'u64,
       exemplars: @[], flags: 0'u32,
       kind: ndpDouble, doubleValue: 1.5,
     )
@@ -124,7 +156,7 @@ suite "Metrics data model":
 
   test "MetricSum construction":
     let dp = NumberDataPoint(
-      attributes: @[], startTimeUnixNano: 0'u64, timeUnixNano: 100'u64,
+      attributes: initAttributeSet(), startTimeUnixNano: 0'u64, timeUnixNano: 100'u64,
       exemplars: @[], flags: 0'u32,
       kind: ndpInt, intValue: 42'i64,
     )
@@ -199,3 +231,15 @@ suite "Metrics data model":
       summary: MetricSummary(dataPoints: @[]),
     )
     check m.kind == mkSummary
+
+  test "Metric metadata field":
+    let m = Metric(
+      name: "custom.metric",
+      description: "",
+      unit: "1",
+      metadata: @[KeyValue(key: "team", value: AnyValue(kind: avString, strVal: "ops"))],
+      kind: mkGauge,
+      gauge: MetricGauge(dataPoints: @[]),
+    )
+    check m.metadata.len == 1
+    check m.metadata[0].key == "team"

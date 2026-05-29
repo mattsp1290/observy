@@ -15,7 +15,6 @@ import ./anyvalue
 type
   TraceId* = array[16, byte]
   SpanId*  = array[8, byte]
-  TraceFlags* = uint8
 
   SpanKind* = enum
     skUnspecified = 0
