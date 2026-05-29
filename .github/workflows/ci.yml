@@ -32,6 +32,7 @@ jobs:
           nim compile --mm:orc --threads:on -r tests/test_exporter_http.nim
           nim compile --mm:orc --threads:on -r tests/test_partial_success.nim
           nim compile --mm:orc --threads:on -r tests/test_retry.nim
+          nim compile --mm:orc --threads:on -r tests/test_batch.nim
 
       - name: Start OTel collector and wait for health
         # --wait blocks until the healthcheck in docker-compose.yml reports healthy
