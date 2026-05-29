@@ -11,6 +11,9 @@ type FakeClock = ref object
   nowSec:   float
   sleeps:   seq[int]      ## recorded sleepMs calls
 
+let fixedWall = parse("Mon, 01 Jan 2024 00:00:00 GMT",
+                      "ddd, dd MMM yyyy HH:mm:ss 'GMT'", utc()).toTime()
+
 proc hooks(c: FakeClock): RetryHooks =
   RetryHooks(
     nowSec:  proc (): float {.gcsafe.} =
@@ -21,6 +24,8 @@ proc hooks(c: FakeClock): RetryHooks =
                  c.nowSec += ms.float / 1000.0,   # advance the fake clock
     jitter:  proc (d: float): float {.gcsafe.} =
                {.cast(gcsafe).}: d,                # identity: deterministic
+    nowWall: proc (): Time {.gcsafe.} =
+               {.cast(gcsafe).}: fixedWall,        # fixed wall clock for HTTP-date
   )
 
 proc resp(code: int; retryAfter = ""): ExportResponse =
@@ -166,3 +171,31 @@ suite "retryLoop control flow":
         else:          SendAttempt(resp: resp(200), err: ""))
     check r.succeeded
     check c.sleeps == @[120000]
+
+  test "Retry-After: 0 is floored (no busy-loop)":
+    var c = FakeClock(nowSec: 0.0)
+    var calls = 0
+    let r = retryLoop(300.0, hooks(c), proc (): SendAttempt {.gcsafe.} =
+      {.cast(gcsafe).}:
+        inc calls
+        if calls == 1: SendAttempt(resp: resp(503, "0"), err: "")
+        else:          SendAttempt(resp: resp(200), err: ""))
+    check r.succeeded
+    check c.sleeps.len == 1
+    check c.sleeps[0] == 50            # floored to minDelaySec (0.05s)
+
+  test "jitter cannot push a single delay above the 30s cap":
+    var c = FakeClock(nowSec: 0.0)
+    var calls = 0
+    # jitter that always inflates by 10% (the worst case)
+    var h = hooks(c)
+    h.jitter = proc (d: float): float {.gcsafe.} =
+      {.cast(gcsafe).}: d * 1.1
+    let r = retryLoop(100_000.0, h, proc (): SendAttempt {.gcsafe.} =
+      {.cast(gcsafe).}:
+        inc calls
+        if calls > 10: SendAttempt(resp: resp(200), err: "")
+        else:          SendAttempt(resp: resp(503), err: ""))
+    check r.succeeded
+    for ms in c.sleeps:
+      check ms <= 30000              # cap applied AFTER jitter

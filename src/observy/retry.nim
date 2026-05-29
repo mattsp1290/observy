@@ -22,14 +22,17 @@ const
   initialDelaySec = 1.0
   backoffMultiplier = 2.0
   maxSingleDelaySec = 30.0
+  minDelaySec = 0.05        ## floor so a Retry-After: 0 / past-date can't busy-loop
+  maxAttempts = 1000        ## hard backstop independent of the time budget
 
 type
   RetryHooks* = object
     ## Injection seam for deterministic testing. Defaults use the real monotonic
-    ## clock, OS sleep, and a ±10% random jitter.
-    nowSec*:  proc (): float {.gcsafe.}        ## monotonic seconds
+    ## clock, OS sleep, a ±10% thread-local random jitter, and the wall clock.
+    nowSec*:  proc (): float {.gcsafe.}        ## monotonic seconds (elapsed budget)
     sleepMs*: proc (ms: int) {.gcsafe.}        ## block for ms milliseconds
     jitter*:  proc (delaySec: float): float {.gcsafe.}  ## apply ±10% to a delay
+    nowWall*: proc (): Time {.gcsafe.}         ## wall clock (Retry-After HTTP-date)
 
   SendAttempt* = object
     ## One outcome from the send thunk: a response, or a transport-level error.
@@ -62,9 +65,17 @@ proc parseRetryAfter*(headerVal: string; nowWall: Time): float =
   except CatchableError:
     return -1.0
 
+var jitterRng {.threadvar.}: Rand
+var jitterRngReady {.threadvar.}: bool
+
 proc defaultJitter(delaySec: float): float =
-  ## ±10% uniform jitter.
-  let factor = 0.9 + rand(0.2)   # [0.9, 1.1)
+  ## ±10% uniform jitter using a THREAD-LOCAL RNG. std/random's default rand()
+  ## mutates a process-global state (a data race once the batch worker owns the
+  ## exporter under --threads:on), so each thread seeds its own Rand.
+  if not jitterRngReady:
+    jitterRng = initRand()
+    jitterRngReady = true
+  let factor = 0.9 + jitterRng.rand(0.2)   # [0.9, 1.1)
   delaySec * factor
 
 proc defaultRetryHooks*(): RetryHooks =
@@ -75,6 +86,8 @@ proc defaultRetryHooks*(): RetryHooks =
                {.cast(gcsafe).}: sleep(ms),
     jitter:  proc (d: float): float {.gcsafe.} =
                {.cast(gcsafe).}: defaultJitter(d),
+    nowWall: proc (): Time {.gcsafe.} =
+               {.cast(gcsafe).}: getTime(),
   )
 
 proc retryLoop*(maxElapsedSec: float; hooks: RetryHooks;
@@ -101,11 +114,22 @@ proc retryLoop*(maxElapsedSec: float; hooks: RetryHooks;
     else:
       result.errorMessage = "transport error: " & a.err
 
-    # Decide the next delay: Retry-After (server-directed) overrides backoff.
-    var sleepSec = hooks.jitter(min(delay, maxSingleDelaySec))
+    # Hard attempt backstop independent of the time budget.
+    if attempt >= maxAttempts:
+      result.gaveUp = true
+      result.errorMessage = "retry attempt cap (" & $maxAttempts &
+                            ") reached; last: " & result.errorMessage
+      return
+
+    # Decide the next delay. Computed backoff: jitter then cap at 30s (cap AFTER
+    # jitter so ±10% can never push a single delay above the ceiling).
+    var sleepSec = min(hooks.jitter(delay), maxSingleDelaySec)
+    # Retry-After (server-directed) overrides the computed backoff verbatim.
     if a.err.len == 0 and a.resp.retryAfter.len > 0:
-      let ra = parseRetryAfter(a.resp.retryAfter, getTime())
-      if ra >= 0.0: sleepSec = ra      # honored verbatim, no jitter/cap
+      let ra = parseRetryAfter(a.resp.retryAfter, hooks.nowWall())
+      if ra >= 0.0: sleepSec = ra
+    # Floor every retry delay so a Retry-After: 0 / past HTTP-date can't busy-loop.
+    sleepSec = max(sleepSec, minDelaySec)
 
     # Stop if sleeping would exceed the cumulative retry window.
     let elapsed = hooks.nowSec() - start
