@@ -629,3 +629,33 @@ suite "Aggregation temporality selector":
     )
     let applied = applyTemporalitySelector(m, alwaysDelta())
     check applied.kind == mkSummary  # unchanged
+
+suite "Metrics attribute limits on NumberDataPoint":
+  test "NumberDataPoint AttributeSet drops and counts excess":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    check attrs.pairs.len == 128
+    check attrs.dropped == 2'u32
+
+  test "NumberDataPoint with overflow attrs encodes 128 attrs in proto":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let dp = NumberDataPoint(
+      attributes: attrs,
+      timeUnixNano: 1'u64,
+      kind: ndpDouble,
+      doubleValue: 1.0,
+    )
+    let m = Metric(
+      name: "overflow",
+      kind: mkGauge,
+      gauge: MetricGauge(dataPoints: @[dp]),
+    )
+    let j = parseJson(metricToJson(
+      Resource(attributes: initAttributeSet()),
+      InstrumentationScope(attributes: initAttributeSet()),
+      @[m]))
+    let attrs_j = j["resourceMetrics"][0]["scopeMetrics"][0]["metrics"][0]["gauge"]["dataPoints"][0]["attributes"]
+    check attrs_j.len == 128
