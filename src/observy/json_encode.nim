@@ -9,16 +9,19 @@
 import std/base64
 import std/math
 import ./anyvalue
-import ./traces
+# Note: traces is NOT imported here to avoid a circular dependency
+# (traces.nim imports json_encode.nim for its JSON encoding procs).
+# hexEncodeTraceId/hexEncodeSpanId accept openArray[byte] so TraceId/SpanId
+# (both array[N, byte]) coerce automatically at call sites.
 
-proc hexEncodeTraceId*(id: TraceId): string =
+proc hexEncodeTraceId*(id: openArray[byte]): string =
   const h = "0123456789abcdef"
   result = newString(32)
   for i in 0 ..< 16:
     result[i * 2]     = h[int(id[i] shr 4)]
     result[i * 2 + 1] = h[int(id[i] and 0xF)]
 
-proc hexEncodeSpanId*(id: SpanId): string =
+proc hexEncodeSpanId*(id: openArray[byte]): string =
   const h = "0123456789abcdef"
   result = newString(16)
   for i in 0 ..< 8:

@@ -1,6 +1,10 @@
 import unittest
+import std/json
 import ../src/observy/anyvalue
+import ../src/observy/proto
+import ../src/observy/resource
 import ../src/observy/traces
+import ./testutil
 
 suite "Traces data model":
   test "TraceId and SpanId are correct byte arrays":
@@ -122,3 +126,138 @@ suite "Traces data model":
     check span.links.len == 0
     check span.droppedAttributesCount == 0'u32
     check span.flags == 0'u32
+
+# ---------------------------------------------------------------------------
+# Proto encoding tests
+# ---------------------------------------------------------------------------
+
+proc makeFullSpan(): Span =
+  ## Constructs the same Span as in tools/gen_fixtures.py (full_span.bin)
+  const
+    TID = [0x4b'u8,0xf9,0x2f,0x35,0x77,0xb3,0x4d,0xa6,
+           0xa3,0xce,0x92,0x9d,0x0e,0x0e,0x47,0x36]
+    SID = [0x00'u8,0xf0,0x67,0xaa,0x0b,0xa9,0x02,0xb7]
+    PID = [0xaa'u8,0xbb,0xcc,0xdd,0x11,0x22,0x33,0x44]  # parent
+    LTD = [0xff'u8,0xff,0xff,0xff,0xff,0xff,0xff,0xff,
+           0xff,0xff,0xff,0xff,0xff,0xff,0xff,0xff]
+    LSI = [0x11'u8,0x22,0x33,0x44,0x55,0x66,0x77,0x88]
+
+  var attrs = initAttributeSet()
+  attrs.add("http.method",      AnyValue(kind: avString, strVal: "POST"))
+  attrs.add("http.url",         AnyValue(kind: avString, strVal: "https://api.example.com/users"))
+  attrs.add("http.status_code", AnyValue(kind: avInt,    intVal: 201))
+  attrs.add("latency.ms",       AnyValue(kind: avDouble, dblVal: 12.5))
+  attrs.add("http.success",     AnyValue(kind: avBool,   boolVal: true))
+  attrs.add("request.id",       AnyValue(kind: avBytes,  bytesVal: @[0x01'u8, 0x02, 0x03, 0x04]))
+
+  var evAttrs = initAttributeSet()
+  evAttrs.add("user.id", AnyValue(kind: avString, strVal: "u-12345"))
+  let ev = SpanEvent(timeUnixNano: 1_000_000_000_500_000_000'u64,
+                     name: "user.created", attributes: evAttrs)
+
+  var lkAttrs = initAttributeSet()
+  lkAttrs.add("link.type", AnyValue(kind: avString, strVal: "child_of"))
+  let lk = SpanLink(traceId: LTD, spanId: LSI, attributes: lkAttrs)
+
+  Span(
+    traceId:           TID,
+    spanId:            SID,
+    parentSpanId:      PID,
+    traceState:        "rojo=00f067aa0ba902b7",
+    name:              "POST /api/users",
+    kind:              skServer,
+    startTimeUnixNano: 1_000_000_000_000_000_000'u64,
+    endTimeUnixNano:   1_000_000_002_000_000_000'u64,
+    attributes:        attrs,
+    events:            @[ev],
+    links:             @[lk],
+    status:            SpanStatus(code: statusOk),
+    flags:             1'u32,
+  )
+
+suite "Traces proto encoding":
+  test "minimal_span — root span, no parent, fixed64 timestamps":
+    const
+      TID = [0x4b'u8,0xf9,0x2f,0x35,0x77,0xb3,0x4d,0xa6,
+             0xa3,0xce,0x92,0x9d,0x0e,0x0e,0x47,0x36]
+      SID = [0x00'u8,0xf0,0x67,0xaa,0x0b,0xa9,0x02,0xb7]
+    var w: ProtoWriter
+    let s = Span(
+      traceId: TID, spanId: SID, name: "GET /api/users",
+      kind: skServer,
+      startTimeUnixNano: 1_000_000_000_000_000_000'u64,
+      endTimeUnixNano:   1_000_000_001_000_000_000'u64,
+      attributes: initAttributeSet(),
+    )
+    protoEncodeSpan(w, s)
+    check w.buf == readBin("tests/fixtures/proto/minimal_span.bin")
+
+  test "full_span.bin — all fields, attributes, event, link, status":
+    var w: ProtoWriter
+    protoEncodeSpan(w, makeFullSpan())
+    check w.buf == readBin("tests/fixtures/proto/full_span.bin")
+
+suite "Traces JSON encoding":
+  test "jsonEncodeSpan produces valid JSON with hex traceId/spanId":
+    let s = makeFullSpan()
+    let j = parseJson(jsonEncodeSpan(s))
+    check j["traceId"].getStr() == "4bf92f3577b34da6a3ce929d0e0e4736"
+    check j["traceId"].getStr().len == 32
+    check j["spanId"].getStr() == "00f067aa0ba902b7"
+    check j["parentSpanId"].getStr() == "aabbccdd11223344"
+    check j["name"].getStr() == "POST /api/users"
+    check j["kind"].getInt() == 2         # integer, not string "SERVER"
+    check j["startTimeUnixNano"].kind == JString
+    check j["flags"].getInt() == 1
+
+  test "jsonEncodeSpan int attribute is quoted string":
+    let s = makeFullSpan()
+    let j = parseJson(jsonEncodeSpan(s))
+    var found = false
+    for attr in j["attributes"]:
+      if attr["key"].getStr() == "http.status_code":
+        check attr["value"]["intValue"].kind == JString
+        check attr["value"]["intValue"].getStr() == "201"
+        found = true
+    check found
+
+  test "jsonEncodeSpan bytes attribute is base64":
+    let s = makeFullSpan()
+    let j = parseJson(jsonEncodeSpan(s))
+    var found = false
+    for attr in j["attributes"]:
+      if attr["key"].getStr() == "request.id":
+        check attr["value"]["bytesValue"].getStr() == "AQIDBA=="
+        found = true
+    check found
+
+  test "spanToJson produces ExportTraceServiceRequest structure":
+    let s = makeFullSpan()
+    let j = parseJson(spanToJson(Resource(attributes: initAttributeSet()),
+                                 InstrumentationScope(attributes: initAttributeSet()),
+                                 @[s]))
+    check j.hasKey("resourceSpans")
+    check j["resourceSpans"][0].hasKey("resource")
+    check j["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"].getStr() == "POST /api/users"
+
+  test "root span omits parentSpanId":
+    let s = Span(name: "root", traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                 spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet())
+    let j = parseJson(jsonEncodeSpan(s))
+    check not j.hasKey("parentSpanId")
+
+  test "status with message but unset code omits code field":
+    # Exercises the status branch where only a message is present (code stays 0).
+    let s = Span(name: "s", traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                 spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet(),
+                 status: SpanStatus(code: statusUnset, message: "boom"))
+    let j = parseJson(jsonEncodeSpan(s))
+    check j["status"]["message"].getStr() == "boom"
+    check not j["status"].hasKey("code")   # statusUnset (0) omitted
+
+  test "status with OK code emits code field":
+    let s = Span(name: "s", traceId: [0x01'u8, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],
+                 spanId: [0x01'u8, 0,0,0,0,0,0,0], attributes: initAttributeSet(),
+                 status: SpanStatus(code: statusOk))
+    let j = parseJson(jsonEncodeSpan(s))
+    check j["status"]["code"].getInt() == 1

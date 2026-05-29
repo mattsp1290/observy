@@ -8,6 +8,13 @@ const
 
 type ProtoError* = object of IOError
 
+proc isAllZero*(bytes: openArray[byte]): bool =
+  ## True when every byte is zero. Used to detect unset fixed-size ID fields
+  ## (TraceId/SpanId/parentSpanId) so they can be omitted like proto3 empty bytes.
+  for b in bytes:
+    if b != 0: return false
+  true
+
 # ---------------------------------------------------------------------------
 # ProtoWriter
 # ---------------------------------------------------------------------------
