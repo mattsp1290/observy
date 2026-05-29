@@ -29,10 +29,13 @@ type
 
   ExportResponse* = object
     ## Result of a single HTTP export attempt. `body`/`contentType` are needed by
-    ## the partial-success response decoder; `code` drives retry decisions.
+    ## the partial-success response decoder; `code` drives retry decisions;
+    ## `retryAfter` carries the raw Retry-After header (seconds or HTTP-date) for
+    ## the backoff layer.
     code*:        HttpCode
     contentType*: string
     body*:        string
+    retryAfter*:  string
 
   PartialSuccess* = object
     ## Decoded OTLP partial-success: how many items the collector rejected and
@@ -97,6 +100,7 @@ proc sendRequest*(e: var OtlpHttpExporter; url: string; payload: seq[byte];
   result.code = resp.code
   result.contentType = resp.headers.getOrDefault("content-type")
   result.body = resp.body
+  result.retryAfter = resp.headers.getOrDefault("retry-after")
 
 proc sendSignal*(e: var OtlpHttpExporter; signal: SignalIndex;
                  payload: seq[byte]): ExportResponse =

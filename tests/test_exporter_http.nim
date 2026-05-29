@@ -4,6 +4,7 @@ import std/strutils
 import std/httpcore
 import ../src/observy/config
 import ../src/observy/exporter_http
+import ../src/observy/retry
 
 # ---------------------------------------------------------------------------
 # Local TCP mock server
@@ -193,3 +194,15 @@ suite "OtlpHttpExporter lifecycle and validation":
     expect ValueError:
       discard e.sendRequest("http://127.0.0.1:1/v1/traces", @[0x01'u8],
                             "application/x-protobuf")
+
+suite "retryWithBackoff integration (real send path)":
+  test "200 from mock → succeeded in one attempt":
+    var result: ExportResult
+    discard capture(proc (port: int) =
+      var e = newOtlpHttpExporter(baseConfig())
+      result = e.retryWithBackoff("http://127.0.0.1:" & $port & "/v1/traces",
+                                  @[0x01'u8, 0x02], "application/x-protobuf")
+      e.close())
+    check result.succeeded
+    check result.attempts == 1
+    check result.response.code == Http200
