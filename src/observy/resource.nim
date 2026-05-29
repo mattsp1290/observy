@@ -1,5 +1,6 @@
 # Resource type (labeled key-value attributes for a telemetry source)
 import std/base64
+import std/math
 import ./anyvalue
 import ./proto
 
@@ -17,13 +18,46 @@ import ./proto
 type
   Resource* = object
     attributes*:              AttributeSet
-    droppedAttributesCount*:  int
+    droppedAttributesCount*:  uint32
 
   InstrumentationScope* = object
     name*:                    string
     version*:                 string
     attributes*:              AttributeSet
-    droppedAttributesCount*:  int
+    droppedAttributesCount*:  uint32
+
+# ---------------------------------------------------------------------------
+# JSON helpers
+# ---------------------------------------------------------------------------
+
+proc jsonEscape*(s: string): string =
+  result = "\""
+  for c in s:
+    case c
+    of '"':  result.add("\\\"")
+    of '\\': result.add("\\\\")
+    of '\b': result.add("\\b")
+    of '\f': result.add("\\f")
+    of '\n': result.add("\\n")
+    of '\r': result.add("\\r")
+    of '\t': result.add("\\t")
+    else:
+      if ord(c) < 0x20:
+        result.add("\\u00")
+        let hi = ord(c) shr 4
+        let lo = ord(c) and 0xF
+        result.add(chr(if hi < 10: ord('0') + hi else: ord('a') + hi - 10))
+        result.add(chr(if lo < 10: ord('0') + lo else: ord('a') + lo - 10))
+      else:
+        result.add(c)
+  result.add("\"")
+
+proc jsonDouble*(v: float64): string =
+  if isNaN(v): return "\"NaN\""
+  case classify(v)
+  of fcInf:    return "\"Infinity\""
+  of fcNegInf: return "\"-Infinity\""
+  else:        $v
 
 # ---------------------------------------------------------------------------
 # Proto encode
@@ -63,7 +97,8 @@ proc protoEncodeAnyValue*(w: var ProtoWriter; v: AnyValue) =
 proc protoEncode*(r: Resource): seq[byte] =
   var w: ProtoWriter
   protoEncodeKeyValues(w, 1, r.attributes.pairs)
-  w.writeUint32(2, uint32(r.droppedAttributesCount))
+  if r.droppedAttributesCount != 0:
+    w.writeUint32(2, r.droppedAttributesCount)
   w.buf
 
 proc protoEncode*(s: InstrumentationScope): seq[byte] =
@@ -71,7 +106,8 @@ proc protoEncode*(s: InstrumentationScope): seq[byte] =
   w.writeString(1, s.name)
   w.writeString(2, s.version)
   protoEncodeKeyValues(w, 3, s.attributes.pairs)
-  w.writeUint32(4, uint32(s.droppedAttributesCount))
+  if s.droppedAttributesCount != 0:
+    w.writeUint32(4, s.droppedAttributesCount)
   w.buf
 
 # ---------------------------------------------------------------------------
@@ -81,20 +117,20 @@ proc protoEncode*(s: InstrumentationScope): seq[byte] =
 proc jsonEncodeAnyValue*(v: AnyValue): string
 
 proc jsonEncodeKeyValue*(kv: KeyValue): string =
-  "{\"key\":\"" & kv.key & "\",\"value\":" & jsonEncodeAnyValue(kv.value) & "}"
+  "{\"key\":" & jsonEscape(kv.key) & ",\"value\":" & jsonEncodeAnyValue(kv.value) & "}"
 
 proc jsonEncodeAnyValue*(v: AnyValue): string =
   case v.kind
   of avString:
-    "{\"stringValue\":\"" & v.strVal & "\"}"
+    "{\"stringValue\":" & jsonEscape(v.strVal) & "}"
   of avBool:
     if v.boolVal: "{\"boolValue\":true}" else: "{\"boolValue\":false}"
   of avInt:
     "{\"intValue\":\"" & $v.intVal & "\"}"
   of avDouble:
-    "{\"doubleValue\":" & $v.dblVal & "}"
+    "{\"doubleValue\":" & jsonDouble(v.dblVal) & "}"
   of avBytes:
-    "{\"bytesValue\":\"" & encode(v.bytesVal) & "\"}"
+    "{\"bytesValue\":" & jsonEscape(encode(v.bytesVal)) & "}"
   of avArray:
     var elems = "["
     for i, elem in v.arrayVal:
@@ -119,15 +155,15 @@ proc jsonEncodeAttributes(pairs: openArray[KeyValue]): string =
 
 proc jsonEncode*(r: Resource): string =
   result = "{\"attributes\":" & jsonEncodeAttributes(r.attributes.pairs)
-  if r.droppedAttributesCount > 0:
+  if r.droppedAttributesCount != 0:
     result.add(",\"droppedAttributesCount\":" & $r.droppedAttributesCount)
   result.add("}")
 
 proc jsonEncode*(s: InstrumentationScope): string =
-  result = "{\"name\":\"" & s.name & "\""
+  result = "{\"name\":" & jsonEscape(s.name)
   if s.version.len > 0:
-    result.add(",\"version\":\"" & s.version & "\"")
+    result.add(",\"version\":" & jsonEscape(s.version))
   result.add(",\"attributes\":" & jsonEncodeAttributes(s.attributes.pairs))
-  if s.droppedAttributesCount > 0:
+  if s.droppedAttributesCount != 0:
     result.add(",\"droppedAttributesCount\":" & $s.droppedAttributesCount)
   result.add("}")
