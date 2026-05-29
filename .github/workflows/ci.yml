@@ -35,6 +35,7 @@ jobs:
           nim compile --mm:orc --threads:on -r tests/test_batch.nim
           nim compile --mm:orc --threads:on -r tests/test_umbrella.nim
           nim compile --mm:orc --threads:on -r tests/test_record.nim
+          nim compile --mm:orc --threads:on -r tests/integration/test_harness.nim
 
       - name: Compile examples
         run: |
@@ -47,10 +48,11 @@ jobs:
         # (polls localhost:13133 via wget; up to 10 retries × 5s = ~50s timeout)
         run: docker compose up -d --wait
 
-      - name: Run integration tests
-        # Placeholder — add signal-export integration tests when exporter is implemented
-        # (tracked in beads as future work)
-        run: echo "Integration tests placeholder — add when exporter is implemented"
+      - name: Run integration tests (live collector)
+        # The collector is up (previous step). -d:liveCollector enables the harness's
+        # live waitForCollector check. Per-signal integration tests (observy-1yo/
+        # 39x/xj4) will be added here as they land.
+        run: nim compile --mm:orc --threads:on -d:liveCollector -r tests/integration/test_harness.nim
 
       - name: Stop collector
         if: always()
