@@ -137,3 +137,35 @@ suite "handleResponse warning":
     check captured.len == 1
     check captured[0].contains("rejected=3")
     check captured[0].contains("throttled")
+
+  test "truncated protobuf body warns (not crash) and returns empty":
+    var captured: seq[string]
+    var e = newOtlpHttpExporter(cfg())
+    e.warn = proc (msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: captured.add(msg)
+    # field 1 length-delimited claiming 18 bytes but truncated → ProtoError
+    var s = ""
+    for b in hexToBytes("0a12080512"): s.add(char(b))
+    let resp = ExportResponse(code: Http200, contentType: "application/x-protobuf", body: s)
+    let ps = e.handleResponse(resp)
+    e.close()
+    check ps.rejectedCount == 0
+    check captured.len == 1
+    check captured[0].contains("could not")  or captured[0].contains("failed to decode")
+
+  test "malformed JSON body warns (not silent)":
+    var captured: seq[string]
+    var e = newOtlpHttpExporter(cfg())
+    e.warn = proc (msg: string) {.gcsafe.} =
+      {.cast(gcsafe).}: captured.add(msg)
+    let resp = ExportResponse(code: Http200, contentType: "application/json",
+      body: "{not valid json")
+    discard e.handleResponse(resp)
+    e.close()
+    check captured.len == 1
+    check captured[0].contains("failed to decode")
+
+  test "rejectedProfiles JSON key is recognized":
+    let ps = parsePartialSuccessJson(
+      "{\"partialSuccess\":{\"rejectedProfiles\":\"6\"}}")
+    check ps.rejectedCount == 6

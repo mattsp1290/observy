@@ -15,6 +15,9 @@ const defaultTimeoutMs = 10_000   ## OTLP spec default per-request timeout
 
 type
   WarnProc* = proc (msg: string) {.gcsafe.}
+    ## Called when a 200 response reports rejected items or fails to decode.
+    ## May run on a worker thread once the batch processor (observy-ef5) owns the
+    ## exporter, so it must be gcsafe and must not capture shared mutable GC state.
 
   OtlpHttpExporter* = object
     ## Single-owner transport. Holds a `ref HttpClient`, so a copy shares the
@@ -115,9 +118,17 @@ proc sendSignal*(e: var OtlpHttpExporter; signal: SignalIndex;
 #                                          field 2 = error_message string }
 # ---------------------------------------------------------------------------
 
+proc bodyToBytes(body: string): seq[byte] =
+  ## Reinterpret an HTTP body string as raw bytes (mirror of bytesToBody).
+  result = newSeq[byte](body.len)
+  if body.len > 0:
+    copyMem(addr result[0], unsafeAddr body[0], body.len)
+
 proc decodeExportServiceResponseProto*(body: seq[byte]): PartialSuccess =
   ## Decode the protobuf Export*ServiceResponse partial_success. Empty/absent
-  ## body → all-zero PartialSuccess (full acceptance).
+  ## body → all-zero PartialSuccess (full acceptance). Raises ProtoError on a
+  ## malformed/truncated body — callers that take untrusted wire data should use
+  ## parsePartialSuccess / handleResponse, which degrade to empty instead.
   if body.len == 0: return
   var r = ProtoReader(data: body)
   while r.pos < body.len:
@@ -136,44 +147,65 @@ proc decodeExportServiceResponseProto*(body: seq[byte]): PartialSuccess =
     else:
       r.skipField(wt)
 
-proc parsePartialSuccessJson*(body: string): PartialSuccess =
-  ## Extract partialSuccess.{rejectedSpans|rejectedDataPoints|rejectedLogRecords,
-  ## errorMessage} from an OTLP/JSON response. int64 counts arrive as JSON
-  ## strings per the OTLP JSON mapping, but tolerate a JSON number too.
-  if body.strip().len == 0: return
-  let j =
-    try: parseJson(body)
-    except CatchableError: return
-  if j.kind != JObject or not j.hasKey("partialSuccess"): return
-  let ps = j["partialSuccess"]
-  if ps.kind != JObject: return
-  for key in ["rejectedSpans", "rejectedDataPoints", "rejectedLogRecords"]:
-    if ps.hasKey(key):
-      let v = ps[key]
-      result.rejectedCount =
-        case v.kind
-        of JString: (try: parseBiggestInt(v.getStr()) except ValueError: 0'i64)
-        of JInt:    v.getBiggestInt()
-        else:       0'i64
-  if ps.hasKey("errorMessage") and ps["errorMessage"].kind == JString:
-    result.errorMessage = ps["errorMessage"].getStr()
+proc decodeStrict(body: string; contentType: string): PartialSuccess =
+  ## Single decode path, by Content-Type. RAISES on a malformed body (JSON parse
+  ## error / ProtoError). Empty body or absent partial_success → all-zero.
+  if body.len == 0: return
+  if contentType.toLowerAscii().contains("application/json"):
+    let j = parseJson(body)
+    if j.kind != JObject or not j.hasKey("partialSuccess"): return
+    let ps = j["partialSuccess"]
+    if ps.kind != JObject: return
+    # rejectedProfiles included for parity with the signal-agnostic proto path
+    # (profiles is experimental; harmless to recognize here).
+    for key in ["rejectedSpans", "rejectedDataPoints", "rejectedLogRecords",
+                "rejectedProfiles"]:
+      if ps.hasKey(key):
+        let v = ps[key]
+        result.rejectedCount =
+          case v.kind
+          of JString: (try: parseBiggestInt(v.getStr()) except ValueError: 0'i64)
+          of JInt:    v.getBiggestInt()
+          else:       0'i64
+        break   # only one rejected_* key is valid per signal
+    if ps.hasKey("errorMessage") and ps["errorMessage"].kind == JString:
+      result.errorMessage = ps["errorMessage"].getStr()
+  else:
+    # default / x-protobuf
+    result = decodeExportServiceResponseProto(bodyToBytes(body))
 
 proc parsePartialSuccess*(body: string; contentType: string): PartialSuccess =
-  ## Route a 200 response body to the JSON or protobuf decoder by Content-Type.
-  ## Defaults to protobuf (the default protocol) for anything non-JSON.
-  if contentType.toLowerAscii().contains("application/json"):
-    parsePartialSuccessJson(body)
-  else:
-    var bytes = newSeq[byte](body.len)
-    for i, c in body: bytes[i] = byte(c)
-    decodeExportServiceResponseProto(bytes)
+  ## Lenient router: never raises. A malformed/undecodable body degrades to an
+  ## all-zero PartialSuccess. Use handleResponse if you also want a warning on a
+  ## body that arrived but could not be decoded.
+  try: decodeStrict(body, contentType)
+  except CatchableError: PartialSuccess()
+
+proc parsePartialSuccessJson*(body: string): PartialSuccess =
+  ## Lenient JSON-only decode (never raises). Retained for direct callers/tests.
+  try: decodeStrict(body, "application/json")
+  except CatchableError: PartialSuccess()
 
 proc handleResponse*(e: OtlpHttpExporter; resp: ExportResponse): PartialSuccess =
-  ## ALWAYS call this on a 200 response. Decodes partial-success and, if anything
-  ## was rejected or an error message is present, emits a warning (never silently
-  ## discards). Returns the decoded PartialSuccess to the caller.
-  result = parsePartialSuccess(resp.body, resp.contentType)
-  if result.rejectedCount > 0 or result.errorMessage.len > 0:
+  ## ALWAYS call this on a 200 response. Decodes partial-success and warns (never
+  ## silently discards) when items were rejected. A body that arrived but failed
+  ## to decode also warns ("possible undetected partial success") rather than
+  ## crashing (proto) or going silent (JSON). Returns the decoded PartialSuccess.
+  ##
+  ## NOTE: this is NOT yet wired into sendRequest/sendSignal — those are
+  ## single-attempt primitives. The retry/batch orchestration layer (observy-05l,
+  ## observy-ef5) MUST route each final 200 ExportResponse through handleResponse.
+  ## Tracked by observy follow-up bead.
+  if resp.body.len == 0:
+    return PartialSuccess()        # empty body = unambiguous full acceptance
+  try:
+    result = decodeStrict(resp.body, resp.contentType)
+  except CatchableError as ex:
+    if e.warn != nil:
+      e.warn("received HTTP 200 but failed to decode response body (" &
+             ex.msg & ") — possible undetected partial success")
+    return PartialSuccess()
+  if result.rejectedCount != 0 or result.errorMessage.len > 0:
     if e.warn != nil:
       var msg = "partial success: rejected=" & $result.rejectedCount
       if result.errorMessage.len > 0:
