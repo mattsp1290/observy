@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "observy",
+  "project_id": "804f14b8-b127-438d-8f3f-de2f57268851"
+}
