@@ -232,9 +232,11 @@ def gen_proto():
     write_bin("summary_metric.bin", summary)
 
     # log_record.bin — all LogRecord fields, including event_name (field 12).
-    # event_name requires opentelemetry-proto >= 1.10.0 (the proto release that
-    # added the field). Regenerated under observy-4fz with a proto bundle that
-    # carries it; run gen_fixtures.py against opentelemetry-proto >= 1.10.0.
+    # event_name is absent from the proto bundled by older opentelemetry-proto
+    # PyPI releases (e.g. 1.31.1) and present from 1.36.0, which is the version
+    # this fixture was regenerated with (observy-4fz). Regenerate only against
+    # opentelemetry-proto >= 1.36.0 (see tools/requirements.txt), or field 12 is
+    # silently dropped and the golden tests break.
     log = LogRecord(
         time_unix_nano=1_000_000_000_000_000_000,
         observed_time_unix_nano=1_000_000_000_100_000_000,

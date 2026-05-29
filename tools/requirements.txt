@@ -1,2 +1,8 @@
-opentelemetry-api>=1.20.0
-opentelemetry-exporter-otlp-proto-grpc>=1.20.0
+# gen_fixtures.py imports from opentelemetry.proto.* only. Pin the proto bundle
+# explicitly: event_name (LogRecord field 12) is absent from the proto bundled by
+# older releases (e.g. 1.31.1) and present from 1.36.0 — the version log_record.bin
+# was regenerated with (observy-4fz). Without this pin, a fresh regen can silently
+# drop field 12 and break the golden tests.
+opentelemetry-proto>=1.36.0
+opentelemetry-api>=1.36.0
+opentelemetry-exporter-otlp-proto-grpc>=1.36.0

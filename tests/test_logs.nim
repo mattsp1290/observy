@@ -212,6 +212,13 @@ suite "Logs JSON encoding":
     let j = parseJson(jsonEncodeLogRecord(rec))
     check j["body"]["stringValue"].getStr() == "hello"
 
+  test "jsonEncodeLogRecord includes eventName when set, omits when empty (observy-4fz)":
+    let withName = parseJson(jsonEncodeLogRecord(makeLogRecord()))
+    check withName["eventName"].getStr() == "user.login"
+    let without = parseJson(jsonEncodeLogRecord(
+      LogRecord(timeUnixNano: 1'u64, attributes: initAttributeSet())))
+    check not without.hasKey("eventName")
+
   test "logRecordsToJson produces ExportLogsServiceRequest structure":
     let j = parseJson(logRecordsToJson(
       Resource(attributes: initAttributeSet()),
