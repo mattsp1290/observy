@@ -20,13 +20,16 @@ type
     serviceName*:         string
     resourceAttributes*:  seq[(string, string)]
     compression*:         CompressionType
+    timeoutMs*:           int               ## per-request HTTP timeout (ms); <=0 → exporter default
     maxRetryElapsed*:     int               ## max cumulative retry window in seconds
 
+  SignalIndex* = range[0 .. 3]              ## index into signalEndpoints (SigTraces..SigProfiles)
+
 const
-  SigTraces*   = 0
-  SigMetrics*  = 1
-  SigLogs*     = 2
-  SigProfiles* = 3
+  SigTraces*   : SignalIndex = 0
+  SigMetrics*  : SignalIndex = 1
+  SigLogs*     : SignalIndex = 2
+  SigProfiles* : SignalIndex = 3
 
   defaultEndpoint = "http://localhost:4318"
   # Profiles uses /v1development/profiles (experimental path, not /v1/profiles).
@@ -84,6 +87,13 @@ proc loadFromEnv*(): ExporterConfig =
   result.compression = case getEnv("OTEL_EXPORTER_OTLP_COMPRESSION").strip().toLowerAscii()
     of "gzip": compGzip
     else:      compNone
+
+  # OTEL_EXPORTER_OTLP_TIMEOUT is the per-request timeout in milliseconds
+  # (OTLP spec default 10000). Unparseable/absent → spec default.
+  result.timeoutMs =
+    try: parseInt(getEnv("OTEL_EXPORTER_OTLP_TIMEOUT").strip())
+    except ValueError: 10000
+  if result.timeoutMs <= 0: result.timeoutMs = 10000
 
   # 300 s (5 min) is the OTLP spec default; not wired to an env var intentionally.
   result.maxRetryElapsed = 300
