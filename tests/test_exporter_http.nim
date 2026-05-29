@@ -178,11 +178,34 @@ suite "defaultContentType":
     check defaultContentType(otlpJsonHttp) == "application/json"
 
 suite "OtlpHttpExporter lifecycle and validation":
-  test "gzip compression fails fast at construction":
-    var cfg = baseConfig()
-    cfg.compression = compGzip
-    expect ValueError:
-      discard newOtlpHttpExporter(cfg)
+  when not defined(observyGzip):
+    test "gzip compression fails fast at construction without -d:observyGzip":
+      var cfg = baseConfig()
+      cfg.compression = compGzip
+      expect ValueError:
+        discard newOtlpHttpExporter(cfg)
+
+  when defined(observyGzip):
+    test "gzip roundtrip — Content-Encoding header set and gzip magic bytes present":
+      # Use a compressible payload (repeated byte pattern) large enough to produce
+      # a non-trivially compressed body.
+      let payload = newSeq[byte](64)   # 64 zero bytes, highly compressible
+      let req = capture(proc (port: int) =
+        var cfg = baseConfig()
+        cfg.compression = compGzip
+        cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+        var e = newOtlpHttpExporter(cfg)
+        discard e.sendSignal(SigTraces, payload)
+        e.close())
+      check req.toLowerAscii.contains("content-encoding: gzip")
+      let body = req[req.find("\r\n\r\n") + 4 .. ^1]
+      check body.len > 0
+      # Verify gzip magic number (0x1f 0x8b) — guards against windowBits regression
+      # (zlib format starts 0x78; raw deflate has no header). If this ever uses
+      # deflate or zlib framing instead of gzip, this test fails.
+      check body.len >= 2
+      check byte(body[0]) == 0x1f'u8
+      check byte(body[1]) == 0x8b'u8
 
   test "empty URL raises":
     var e = newOtlpHttpExporter(baseConfig())
