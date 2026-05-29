@@ -13,9 +13,10 @@ exporters:
   debug:
     verbosity: detailed
   file:
+    # No `rotation:` block → rotation is disabled by default. (The contrib file
+    # exporter's rotation config has no `enabled` key; specifying it fails config
+    # validation, so the single output file is the default behavior.)
     path: /collector-output/signals.json
-    rotation:
-      enabled: false
 
 extensions:
   health_check:

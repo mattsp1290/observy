@@ -13,3 +13,10 @@ collector-output/*.json
 .dolt/
 *.db
 .beads-credential-key
+
+# Compiled example binaries (sources are examples/*.nim)
+examples/traces
+examples/logs
+examples/metrics
+tests/integration/harness
+tests/integration/test_harness
