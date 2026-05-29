@@ -1,5 +1,6 @@
 import unittest
 import std/json
+import std/sequtils
 import ../src/observy/anyvalue
 import ../src/observy/proto
 import ../src/observy/resource
@@ -135,14 +136,6 @@ proc makeLogRecord(): LogRecord =
     spanId:               SID,
   )
 
-proc protoFieldNumbers(buf: seq[byte]): seq[uint32] =
-  ## Decode top-level field numbers present in a proto message buffer.
-  var r = ProtoReader(data: buf)
-  while r.pos < buf.len:
-    let (fn, wt) = r.readTag()
-    result.add(fn)
-    r.skipField(wt)
-
 suite "Logs proto encoding":
   test "log_record.bin — fixed64 times, fixed32 flags, body AnyValue, attributes":
     var w: ProtoWriter
@@ -213,3 +206,141 @@ suite "Logs JSON encoding":
       @[makeLogRecord()]))
     check j.hasKey("resourceLogs")
     check j["resourceLogs"][0]["scopeLogs"][0]["logRecords"][0]["severityText"].getStr() == "INFO"
+
+suite "Logs attribute limit enforcement":
+  test "attribute limit on LogRecord — 128 stored, 2 dropped":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    check attrs.pairs.len == 128
+    check attrs.dropped == 2'u32
+
+  test "attribute limit in proto encoding — 128 attrs, droppedAttributesCount set":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let rec = LogRecord(
+      timeUnixNano: 1_000_000'u64,
+      body: AnyValue(kind: avString, strVal: "overflow test"),
+      attributes: attrs,
+      droppedAttributesCount: attrs.dropped,
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    # field 6 = attributes (repeated), field 7 = droppedAttributesCount
+    check fields.count(6'u32) == 128
+    check 7'u32 in fields
+
+  test "attribute limit in JSON encoding — droppedAttributesCount is 2":
+    var attrs = initAttributeSet()
+    for i in 0 ..< 130:
+      attrs.add("k" & $i, AnyValue(kind: avString, strVal: "v"))
+    let rec = LogRecord(
+      timeUnixNano: 1_000_000'u64,
+      body: AnyValue(kind: avString, strVal: "overflow test"),
+      attributes: attrs,
+      droppedAttributesCount: attrs.dropped,
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["attributes"].len == 128
+    check j["droppedAttributesCount"].getInt() == 2
+
+suite "Logs body AnyValue kinds":
+  test "body as bool AnyValue encodes boolValue":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avBool, boolVal: true),
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["boolValue"].getBool() == true
+
+  test "body as int AnyValue encodes intValue as string":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avInt, intVal: 42),
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["intValue"].getStr() == "42"
+
+  test "body as double AnyValue encodes doubleValue":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avDouble, dblVal: 3.14),
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"].hasKey("doubleValue")
+
+  test "body as bytes AnyValue encodes bytesValue as base64":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avBytes, bytesVal: @[0x01'u8, 0x02, 0x03, 0x04]),
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["bytesValue"].getStr() == "AQIDBA=="
+
+  test "body as array AnyValue encodes arrayValue":
+    let body = AnyValue(kind: avArray, arrayVal: @[
+      AnyValue(kind: avString, strVal: "a"),
+      AnyValue(kind: avString, strVal: "b"),
+    ])
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: body,
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["arrayValue"]["values"].len == 2
+
+  test "body as kvList AnyValue encodes kvlistValue":
+    let body = AnyValue(kind: avKvList, kvlistVal: @[
+      KeyValue(key: "msg", value: AnyValue(kind: avString, strVal: "ok")),
+    ])
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: body,
+      attributes: initAttributeSet(),
+    )
+    let j = parseJson(jsonEncodeLogRecord(rec))
+    check j["body"]["kvlistValue"]["values"][0]["key"].getStr() == "msg"
+
+suite "Logs proto encoding edge cases":
+  test "observedTimeUnixNano omitted in proto when zero":
+    let rec = LogRecord(
+      timeUnixNano: 1_000_000_000_000_000_000'u64,
+      severityNumber: severityInfo,
+      body: AnyValue(kind: avString, strVal: "no observed time"),
+      attributes: initAttributeSet(),
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 11'u32 notin fields   # observedTimeUnixNano absent when 0
+
+  test "observedTimeUnixNano encoded at field 11 when set":
+    let rec = LogRecord(
+      timeUnixNano:         1_000_000_000_000_000_000'u64,
+      observedTimeUnixNano: 1_000_000_000_100_000_000'u64,
+      body: AnyValue(kind: avString, strVal: "with observed time"),
+      attributes: initAttributeSet(),
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 11'u32 in fields
+
+  test "flags field encoded as fixed32 at field 8":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avString, strVal: "flagged"),
+      attributes: initAttributeSet(),
+      flags: 1'u32,
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 8'u32 in fields

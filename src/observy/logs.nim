@@ -46,6 +46,8 @@ type
     severityText*:           string
     body*:                   AnyValue
     attributes*:             AttributeSet
+    ## Must be set explicitly from attributes.dropped; the encoder does not
+    ## auto-populate it. E.g.: droppedAttributesCount: attrs.dropped
     droppedAttributesCount*: uint32
     flags*:                  uint32
     traceId*:                TraceId

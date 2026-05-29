@@ -40,6 +40,8 @@ type
     timeUnixNano*:           uint64
     name*:                   string
     attributes*:             AttributeSet
+    ## Must be set explicitly from attributes.dropped; the encoder does not
+    ## auto-populate it. E.g.: droppedAttributesCount: attrs.dropped
     droppedAttributesCount*: uint32
 
   SpanLink* = object
@@ -47,6 +49,8 @@ type
     spanId*:                 SpanId
     traceState*:             string
     attributes*:             AttributeSet
+    ## Must be set explicitly from attributes.dropped; the encoder does not
+    ## auto-populate it. E.g.: droppedAttributesCount: attrs.dropped
     droppedAttributesCount*: uint32
     flags*:                  uint32
 
@@ -60,6 +64,8 @@ type
     startTimeUnixNano*:      uint64
     endTimeUnixNano*:        uint64
     attributes*:             AttributeSet
+    ## Must be set explicitly from attributes.dropped; the encoder does not
+    ## auto-populate it. E.g.: droppedAttributesCount: attrs.dropped
     droppedAttributesCount*: uint32
     events*:                 seq[SpanEvent]
     droppedEventsCount*:     uint32
