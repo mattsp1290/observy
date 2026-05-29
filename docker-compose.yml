@@ -1,0 +1,17 @@
+services:
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.119.0
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./collector-config.yml:/etc/otelcol-contrib/config.yaml:ro
+      - ./collector-output:/collector-output
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+      - "13133:13133" # health check
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:13133"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
