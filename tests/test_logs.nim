@@ -344,3 +344,34 @@ suite "Logs proto encoding edge cases":
     protoEncodeLogRecord(w, rec)
     let fields = protoFieldNumbers(w.buf)
     check 8'u32 in fields
+
+suite "Logs proto body — consistency with JSON omission":
+  test "default empty-string body omitted in proto (field 5 absent)":
+    let rec = LogRecord(timeUnixNano: 1'u64, attributes: initAttributeSet())
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 5'u32 notin fields   # body absent when default empty-string
+
+  test "non-default body (e.g. avBool false) is included in proto":
+    # avBool false is an explicitly-set body, not the default — must emit field 5
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avBool, boolVal: false),
+      attributes: initAttributeSet(),
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 5'u32 in fields
+
+  test "avInt 0 body is included in proto":
+    let rec = LogRecord(
+      timeUnixNano: 1'u64,
+      body: AnyValue(kind: avInt, intVal: 0),
+      attributes: initAttributeSet(),
+    )
+    var w: ProtoWriter
+    protoEncodeLogRecord(w, rec)
+    let fields = protoFieldNumbers(w.buf)
+    check 5'u32 in fields

@@ -62,9 +62,14 @@ proc protoEncodeLogRecord*(w: var ProtoWriter; l: LogRecord) =
   w.writeFixed64(1, l.timeUnixNano)
   w.writeInt32(2, int32(l.severityNumber))
   w.writeString(3, l.severityText)
-  var bodyW: ProtoWriter
-  protoEncodeAnyValue(bodyW, l.body)
-  w.writeEmbedded(5, bodyW)
+  # Omit body at field 5 when it is the default empty-string AnyValue, matching
+  # the JSON encoder (logs.nim jsonEncodeLogRecord body guard). A LogRecord with
+  # no body set uses the default AnyValue zero value (avString ""); emitting an
+  # empty AnyValue oneof there would be misleading.
+  if l.body.kind != avString or l.body.strVal.len > 0:
+    var bodyW: ProtoWriter
+    protoEncodeAnyValue(bodyW, l.body)
+    w.writeEmbeddedForce(5, bodyW)
   protoEncodeKeyValues(w, 6, l.attributes.pairs)
   w.writeUint32(7, l.droppedAttributesCount)
   w.writeFixed32(8, l.flags)      # flags is fixed32 in LogRecord

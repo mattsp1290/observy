@@ -120,6 +120,32 @@ proc writeFixed64Force*(w: var ProtoWriter; fieldNumber: uint32; v: uint64) =
   for i in 0 ..< 8:
     w.buf.add(byte((v shr (i * 8)) and 0xFF))
 
+proc writeStringForce*(w: var ProtoWriter; fieldNumber: uint32; v: string) =
+  ## Write a string even when empty — for proto3 oneof members where the empty
+  ## string is a valid set value that must survive serialization.
+  w.writeTag(fieldNumber, WireLen)
+  w.writeVarint(uint64(v.len))
+  for c in v: w.buf.add(byte(c))
+
+proc writeBoolForce*(w: var ProtoWriter; fieldNumber: uint32; v: bool) =
+  ## Write a bool even when false — for proto3 oneof members where false is a
+  ## valid set value. Emits the actual value (0 for false, 1 for true).
+  w.writeTag(fieldNumber, WireVarint)
+  w.writeVarint(uint64(v))
+
+proc writeInt64Force*(w: var ProtoWriter; fieldNumber: uint32; v: int64) =
+  ## Write an int64 even when zero — for proto3 oneof members where 0 is a
+  ## valid set value that must survive serialization.
+  w.writeTag(fieldNumber, WireVarint)
+  w.writeVarint(cast[uint64](v))
+
+proc writeBytesForce*(w: var ProtoWriter; fieldNumber: uint32; v: openArray[byte]) =
+  ## Write bytes even when empty — for proto3 oneof members where empty bytes
+  ## is a valid set value that must survive serialization.
+  w.writeTag(fieldNumber, WireLen)
+  w.writeVarint(uint64(v.len))
+  for b in v: w.buf.add(b)
+
 proc writeBytes*(w: var ProtoWriter; fieldNumber: uint32; v: openArray[byte]) =
   if v.len == 0: return
   w.writeTag(fieldNumber, WireLen)

@@ -227,3 +227,43 @@ suite "AnyValue JSON encoding":
     check j.find("\"kvlistValue\"") >= 0
     check j.find("\"env\"") >= 0
     check j.find("\"prod\"") >= 0
+
+suite "AnyValue proto encoding — oneof zero-value presence":
+  # For a proto3 oneof, the SET case must be emitted even when the value is the
+  # default for that type. These tests verify protoEncodeAnyValue never suppresses
+  # a zero/empty/false value when a case is explicitly set.
+
+  proc fieldNumberOf(v: AnyValue): uint32 =
+    var w: ProtoWriter
+    protoEncodeAnyValue(w, v)
+    if w.buf.len == 0: return 0'u32
+    var r = ProtoReader(data: w.buf)
+    let (fn, _) = r.readTag()
+    fn
+
+  test "avString empty string emits field 1":
+    check fieldNumberOf(AnyValue(kind: avString, strVal: "")) == 1'u32
+
+  test "avBool false emits field 2":
+    check fieldNumberOf(AnyValue(kind: avBool, boolVal: false)) == 2'u32
+
+  test "avInt zero emits field 3":
+    check fieldNumberOf(AnyValue(kind: avInt, intVal: 0)) == 3'u32
+
+  test "avDouble 0.0 emits field 4":
+    check fieldNumberOf(AnyValue(kind: avDouble, dblVal: 0.0)) == 4'u32
+
+  test "avBytes empty emits field 7":
+    check fieldNumberOf(AnyValue(kind: avBytes, bytesVal: @[])) == 7'u32
+
+  test "avArray empty emits field 5":
+    check fieldNumberOf(AnyValue(kind: avArray, arrayVal: @[])) == 5'u32
+
+  test "avKvList empty emits field 6":
+    check fieldNumberOf(AnyValue(kind: avKvList, kvlistVal: @[])) == 6'u32
+
+  test "avBool true still emits field 2 (regression)":
+    check fieldNumberOf(AnyValue(kind: avBool, boolVal: true)) == 2'u32
+
+  test "avInt non-zero still emits field 3 (regression)":
+    check fieldNumberOf(AnyValue(kind: avInt, intVal: 42)) == 3'u32
