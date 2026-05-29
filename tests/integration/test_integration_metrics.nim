@@ -47,11 +47,19 @@ when defined(liveCollector):
       ),
     )
 
-  proc hasCounter(c: string): bool {.gcsafe.} =
-    strutils.contains(c, "observy.test.counter")
+  # Per-test predicates use unique metric names to prevent cross-test contamination
+  # from stale async collector output.
+  proc hasCounterT1(c: string): bool {.gcsafe.} =
+    strutils.contains(c, "observy.test.counter.t1")
+
+  proc hasCounterT2(c: string): bool {.gcsafe.} =
+    strutils.contains(c, "observy.test.counter.t2")
 
   proc hasLatency(c: string): bool {.gcsafe.} =
     strutils.contains(c, "observy.test.latency")
+
+  proc hasCounterT4(c: string): bool {.gcsafe.} =
+    strutils.contains(c, "observy.test.counter.t4")
 
   suite "Metrics integration — live collector":
     setup:
@@ -66,34 +74,40 @@ when defined(liveCollector):
 
     teardown:
       exporter.close()
+      clearCollectorOutput()   # bound cross-test carryover from late async flushes
 
     test "counter metric appears in collector output with correct value":
-      let res   = makeIMetricResource()
-      let scope = makeIMetricScope()
-      let counter = makeCounter("observy.test.counter", 42)
+      let res     = makeIMetricResource()
+      let scope   = makeIMetricScope()
+      # Unique name t1 prevents stale data from later tests interfering.
+      let counter = makeCounter("observy.test.counter.t1", 42)
 
       let resp = exporter.record(res, scope, @[counter])
       check int(resp.code) in 200 .. 299
 
-      let json = waitForOutput(hasCounter, timeoutMs = 10000)
+      let json = waitForOutput(hasCounterT1, timeoutMs = 10000)
 
       assertServiceName(json, "observy-test")
-      assertMetricName(json, "observy.test.counter")
-      check strutils.contains(json, "\"intValue\":\"42\"")
+      assertMetricName(json, "observy.test.counter.t1")
+      # OTLP-JSON field for NumberDataPoint integer value is "asInt" (not "intValue",
+      # which is the AnyValue attribute field). Verified against collector-contrib 0.119.0.
+      check strutils.contains(json, "\"asInt\":\"42\"")
 
     test "temporality selector alwaysCumulative applies to outbound counter":
       let res   = makeIMetricResource()
       let scope = makeIMetricScope()
-      var m = makeCounter("observy.test.counter", 1)
+      # Unique name t2 ensures waitForOutput sees THIS test's data, not test 1's.
+      var m = makeCounter("observy.test.counter.t2", 1)
       m.sum.aggregationTemporality = aggTempDelta   # start as delta
 
       let resp = exporter.record(res, scope, @[m])
       check int(resp.code) in 200 .. 299
 
-      let json = waitForOutput(hasCounter, timeoutMs = 10000)
+      let json = waitForOutput(hasCounterT2, timeoutMs = 10000)
 
-      # The exporter applies alwaysCumulative; collector output should show CUMULATIVE (2)
-      assertMetricName(json, "observy.test.counter")
+      # The exporter applies alwaysCumulative; collector output should show CUMULATIVE (2).
+      # The integer form is emitted by OTel collector-contrib's file exporter.
+      assertMetricName(json, "observy.test.counter.t2")
       check strutils.contains(json, "\"aggregationTemporality\":2")
 
     test "histogram metric appears in collector output with buckets":
@@ -113,12 +127,12 @@ when defined(liveCollector):
     test "wrong metric name assertion fails as expected":
       let res   = makeIMetricResource()
       let scope = makeIMetricScope()
-      let counter = makeCounter("observy.test.counter", 1)
+      let counter = makeCounter("observy.test.counter.t4", 1)
 
       let resp = exporter.record(res, scope, @[counter])
       check int(resp.code) in 200 .. 299
 
-      let json = waitForOutput(hasCounter, timeoutMs = 10000)
+      let json = waitForOutput(hasCounterT4, timeoutMs = 10000)
 
       expect AssertionDefect:
         assertMetricName(json, "wrong.metric.name")
