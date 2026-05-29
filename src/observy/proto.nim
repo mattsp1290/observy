@@ -101,6 +101,21 @@ proc writeDouble*(w: var ProtoWriter; fieldNumber: uint32; v: float64) =
   for i in 0 ..< 8:
     w.buf.add(byte((bits shr (i * 8)) and 0xFF))
 
+proc writeDoubleForce*(w: var ProtoWriter; fieldNumber: uint32; v: float64) =
+  ## Write a double even when its value is 0.0 — for proto3 `optional double`
+  ## fields whose presence is explicit (e.g. HistogramDataPoint.sum/min/max).
+  let bits = cast[uint64](v)
+  w.writeTag(fieldNumber, Wire64)
+  for i in 0 ..< 8:
+    w.buf.add(byte((bits shr (i * 8)) and 0xFF))
+
+proc writeFixed64Force*(w: var ProtoWriter; fieldNumber: uint32; v: uint64) =
+  ## Write a fixed64 even when its value is 0 — for fields where 0 is meaningful
+  ## and must not be suppressed.
+  w.writeTag(fieldNumber, Wire64)
+  for i in 0 ..< 8:
+    w.buf.add(byte((v shr (i * 8)) and 0xFF))
+
 proc writeBytes*(w: var ProtoWriter; fieldNumber: uint32; v: openArray[byte]) =
   if v.len == 0: return
   w.writeTag(fieldNumber, WireLen)
@@ -141,6 +156,16 @@ proc writePackedDouble*(w: var ProtoWriter; fieldNumber: uint32; vs: openArray[f
   for v in vs:
     let bits = cast[uint64](v)
     for i in 0 ..< 8: tmp.buf.add(byte((bits shr (i * 8)) and 0xFF))
+  w.writeTag(fieldNumber, WireLen)
+  w.writeVarint(uint64(tmp.buf.len))
+  for b in tmp.buf: w.buf.add(b)
+
+proc writePackedFixed64*(w: var ProtoWriter; fieldNumber: uint32; vs: openArray[uint64]) =
+  ## Packed repeated fixed64 (8 bytes each) — e.g. HistogramDataPoint.bucket_counts.
+  if vs.len == 0: return
+  var tmp: ProtoWriter
+  for v in vs:
+    for i in 0 ..< 8: tmp.buf.add(byte((v shr (i * 8)) and 0xFF))
   w.writeTag(fieldNumber, WireLen)
   w.writeVarint(uint64(tmp.buf.len))
   for b in tmp.buf: w.buf.add(b)
