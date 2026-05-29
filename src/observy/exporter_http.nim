@@ -12,6 +12,8 @@ import std/json
 import std/strutils
 import ./config
 import ./proto
+when defined(observyGzip):
+  import ./gzip
 
 const defaultTimeoutMs = 10_000   ## OTLP spec default per-request timeout
 
@@ -77,13 +79,14 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
       raise newException(ValueError,
         "header value contains CR or LF (potential HTTP header injection) for key '" & k & "'")
 
-  if config.compression == compGzip:
-    # gzip support is gated behind -d:observyGzip (observy-5a9) and not yet wired.
-    # Fail fast rather than silently shipping uncompressed bytes the collector
-    # would reject for a mismatched Content-Encoding.
-    raise newException(ValueError,
-      "gzip compression is configured but not yet implemented; unset " &
-      "OTEL_EXPORTER_OTLP_COMPRESSION (or config.compression) until observy-5a9 lands")
+  when not defined(observyGzip):
+    if config.compression == compGzip:
+      # gzip support requires -d:observyGzip at compile time (links libz).
+      # Fail fast rather than silently shipping uncompressed bytes that would
+      # fail Content-Encoding negotiation with the collector.
+      raise newException(ValueError,
+        "gzip compression requires -d:observyGzip at compile time (links libz); " &
+        "unset OTEL_EXPORTER_OTLP_COMPRESSION (or config.compression) if not needed")
   result.config = config
   let timeout = if config.timeoutMs > 0: config.timeoutMs else: defaultTimeoutMs
   result.client = newHttpClient(timeout = timeout)
@@ -121,9 +124,19 @@ proc sendRequest*(e: var OtlpHttpExporter; url: string; payload: seq[byte];
   for (k, v) in e.config.headers:
     headers[k] = v
   headers["Content-Type"] = contentType
+  # Apply gzip compression when configured and compiled with -d:observyGzip.
+  let body =
+    when defined(observyGzip):
+      if e.config.compression == compGzip:
+        let compressed = gzipCompress(payload)
+        headers["Content-Encoding"] = "gzip"
+        bytesToBody(compressed)
+      else:
+        bytesToBody(payload)
+    else:
+      bytesToBody(payload)
   e.client.headers = headers
-  let resp = e.client.request(url, httpMethod = HttpPost,
-                              body = bytesToBody(payload))
+  let resp = e.client.request(url, httpMethod = HttpPost, body = body)
   result.code = resp.code
   result.contentType = resp.headers.getOrDefault("content-type")
   result.body = resp.body

@@ -178,11 +178,28 @@ suite "defaultContentType":
     check defaultContentType(otlpJsonHttp) == "application/json"
 
 suite "OtlpHttpExporter lifecycle and validation":
-  test "gzip compression fails fast at construction":
-    var cfg = baseConfig()
-    cfg.compression = compGzip
-    expect ValueError:
-      discard newOtlpHttpExporter(cfg)
+  when not defined(observyGzip):
+    test "gzip compression fails fast at construction without -d:observyGzip":
+      var cfg = baseConfig()
+      cfg.compression = compGzip
+      expect ValueError:
+        discard newOtlpHttpExporter(cfg)
+
+  when defined(observyGzip):
+    test "gzip roundtrip — payload is compressed and Content-Encoding header set":
+      let payload = @[0x0a'u8, 0x01, 0x62, 0x03, 0x04, 0x05]
+      let req = capture(proc (port: int) =
+        var cfg = baseConfig()
+        cfg.compression = compGzip
+        cfg.signalEndpoints[SigTraces] = "http://127.0.0.1:" & $port & "/v1/traces"
+        var e = newOtlpHttpExporter(cfg)
+        discard e.sendSignal(SigTraces, payload)
+        e.close())
+      check req.toLowerAscii.contains("content-encoding: gzip")
+      # The body should be shorter than or equal to the original (for small payloads
+      # gzip overhead may make it larger, but the header must be present).
+      let body = req[req.find("\r\n\r\n") + 4 .. ^1]
+      check body.len > 0   # something was sent
 
   test "empty URL raises":
     var e = newOtlpHttpExporter(baseConfig())

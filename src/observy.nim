@@ -32,6 +32,9 @@ import observy/batch;         export batch
 when defined(observyProfiles):
   import observy/profiles;    export profiles
 
+when defined(observyGzip):
+  import observy/gzip;        export gzip
+
 # ---------------------------------------------------------------------------
 # Friendly constructors (the documented public API names)
 # ---------------------------------------------------------------------------
