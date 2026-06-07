@@ -20,3 +20,10 @@ examples/logs
 examples/metrics
 tests/integration/harness
 tests/integration/test_harness
+
+# 3DS build artifacts (devkitARM). Sources are tracked; binaries are not.
+spike/build/
+build/
+*.elf
+*.3dsx
+*.smdh
