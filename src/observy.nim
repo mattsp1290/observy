@@ -12,8 +12,16 @@
 ##   - config: ExporterConfig / loadFromEnv (OTEL_* env vars)
 ##
 ## Style (after zippy/puppy): value types, shallow object nesting, small surface,
-## zero Nimble dependencies (OpenSSL only for HTTPS via -d:ssl). Compile consumers
-## with `--mm:orc --threads:on`.
+## zero Nimble dependencies (OpenSSL only for HTTPS via -d:ssl). Compile desktop
+## consumers with `--mm:orc --threads:on`.
+##
+## Nintendo 3DS (`-d:ds3`): builds `--mm:arc --threads:off` (see config.nims).
+## The async BatchProcessor (batch.nim) and the `record(BatchProcessor, item)`
+## overloads are unavailable there; use the synchronous
+## `record(exporter, resource, scope, items)` path. Source timestamps from
+## `observy/time_3ds` (osGetTime), never `std/times` at runtime. The HTTP
+## transport on 3DS is the raw-socket `~/git/http` library, not std/httpclient
+## (which does not compile for devkitARM). See `.agents/plans/3ds-support/`.
 ##
 ## Profiles (alpha) are gated behind `-d:observyProfiles`.
 
@@ -27,7 +35,11 @@ import observy/logs;          export logs
 import observy/config;        export config
 import observy/exporter_http; export exporter_http
 import observy/retry;         export retry
-import observy/batch;         export batch
+when not defined(ds3):
+  # batch.nim is a worker thread + system.Channel processor — requires
+  # --threads:on, which the 3DS build (--threads:off) does not have. The 3DS
+  # uses the synchronous record() path only. See .agents/plans/3ds-support/.
+  import observy/batch;       export batch
 
 when defined(observyProfiles):
   import observy/profiles;    export profiles
@@ -110,26 +122,30 @@ proc strToBytes(s: string): seq[byte] =
 #   - record(exporter, resource, scope, items): synchronous, single request.
 # ---------------------------------------------------------------------------
 
-# Instantiating BatchProcessor[Span|LogRecord|Metric] makes the compiler generate
-# Isolated[T].=destroy for these types; std/isolation's =destroy is conservatively
-# inferred as possibly-raising, producing a spurious [Effect] warning at the
-# instantiation site. Suppress it locally (the destructors here cannot actually
-# raise) so the library builds warning-free.
-{.push warning[Effect]: off.}
+# The BatchProcessor record() overloads are async (worker thread + Channel) and
+# exist only off the 3DS (batch.nim is gated above on --threads:on). The 3DS uses
+# the synchronous record(exporter, resource, scope, items) overloads below.
+when not defined(ds3):
+  # Instantiating BatchProcessor[Span|LogRecord|Metric] makes the compiler generate
+  # Isolated[T].=destroy for these types; std/isolation's =destroy is conservatively
+  # inferred as possibly-raising, producing a spurious [Effect] warning at the
+  # instantiation site. Suppress it locally (the destructors here cannot actually
+  # raise) so the library builds warning-free.
+  {.push warning[Effect]: off.}
 
-proc record*(p: var BatchProcessor[Span]; span: Span) =
-  ## Enqueue a span for async batched export. Blocks only under backpressure.
-  p.submit(span)
+  proc record*(p: var BatchProcessor[Span]; span: Span) =
+    ## Enqueue a span for async batched export. Blocks only under backpressure.
+    p.submit(span)
 
-proc record*(p: var BatchProcessor[LogRecord]; log: LogRecord) =
-  ## Enqueue a log record for async batched export.
-  p.submit(log)
+  proc record*(p: var BatchProcessor[LogRecord]; log: LogRecord) =
+    ## Enqueue a log record for async batched export.
+    p.submit(log)
 
-proc record*(p: var BatchProcessor[Metric]; metric: Metric) =
-  ## Enqueue a metric for async batched export.
-  p.submit(metric)
+  proc record*(p: var BatchProcessor[Metric]; metric: Metric) =
+    ## Enqueue a metric for async batched export.
+    p.submit(metric)
 
-{.pop.}
+  {.pop.}
 
 proc handle2xx(e: var OtlpHttpExporter; resp: ExportResponse) =
   ## On a 2xx, decode partial-success and warn on any rejection (never silently
