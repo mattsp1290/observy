@@ -5,6 +5,20 @@
 # - JSON protocol      -> Content-Type: application/json
 # TLS (https endpoints) works automatically when compiled with -d:ssl (OpenSSL);
 # plaintext http needs no external dependencies. gRPC/HTTP2 is out of scope.
+#
+# ── 3DS / retro-console transport seam (TODO: observy-gjj) ──────────────────
+# std/httpclient does NOT compile for the Nintendo 3DS (-d:ds3): it pulls
+# std/nativesockets, which fails on `AF_UNIX undeclared` against libctru's
+# socket-header subset (proven in the M0 spike; see
+# .agents/plans/3ds-support/SPIKE-NOTES.md). The chosen transport there is the
+# raw-socket `~/git/http` library (request:
+# ~/.agents/projects/http/requests/2026-06-07-stdhttpclient-subset-retro-consoles.md).
+# When that library lands, gate the `import std/httpclient` below and the
+# httpclient-using procs (newOtlpHttpExporter's newHttpClient, close, sendRequest's
+# `client.request`) behind `when not defined(ds3)`, and add a `when defined(ds3):`
+# branch backed by `~/git/http` implementing the same ExportResponse surface.
+# std/httpcore is portable and can stay imported on both. The pure parts of this
+# file (ExportResponse, partial-success decoding) need no change.
 import std/httpclient
 import std/httpcore
 export httpcore   ## HttpCode / Http200 etc. are part of ExportResponse's surface

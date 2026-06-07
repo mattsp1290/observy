@@ -1,9 +1,22 @@
 # 06 — Milestones & task breakdown
 
+> **Status (2026-06-07, branch `feat/3ds-support`):**
+> - **M0 — DONE (GO).** Spike passed all rungs on Azahar vs the live collector
+>   (encoders → HTTP 200; `std/httpclient` ruled out; time source validated).
+>   Closed: `observy-8vi`. See `SPIKE-NOTES.md`.
+> - **M1/M2 — partially done (the transport-independent parts).** `config.nims`
+>   ds3 branch, `stubs/`, threaded-`batch` gating in the umbrella, `time_3ds.nim`,
+>   exporter_http transport-seam marker. Desktop build green.
+> - **TRANSPORT — PAUSED by decision.** observy's 3DS HTTP transport is the shared
+>   `~/git/http` library (request filed + reviewed). This is the handoff point:
+>   observy resumes once that library is built. Tracked: `observy-gjj`.
+> - **Remaining M1 (nim_3ds.cfg, build_3ds.sh, examples/nim.cfg fix, exporter_http
+>   gating), M3 (live example), M4 (Datadog verify) — blocked on `~/git/http`.**
+
 Sequenced milestones with acceptance criteria. Each bullet maps cleanly to a
-beads issue when work starts — **issues are not created yet** (this is a plan).
-When implementation begins, run `bd create` per bullet, with deps mirroring the
-gating arrows below.
+beads issue when work starts. M0/M1/M2 partially implemented (see status above);
+remaining items map to `bd create` per bullet, with deps mirroring the gating
+arrows below.
 
 ## Dependency order
 
