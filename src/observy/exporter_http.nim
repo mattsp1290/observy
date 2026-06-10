@@ -6,20 +6,16 @@
 # TLS (https endpoints) works automatically when compiled with -d:ssl (OpenSSL);
 # plaintext http needs no external dependencies. gRPC/HTTP2 is out of scope.
 #
-# ── 3DS / retro-console transport seam (TODO: observy-gjj) ──────────────────
+# ── 3DS / retro-console transport seam ───────────────────────────────────────
 # std/httpclient does NOT compile for the Nintendo 3DS (-d:ds3): it pulls
 # std/nativesockets, which fails on `AF_UNIX undeclared` against libctru's
 # socket-header subset (proven in the M0 spike; see
 # .agents/plans/3ds-support/SPIKE-NOTES.md). The chosen transport there is the
-# raw-socket `~/git/http` library (request:
-# ~/.agents/projects/http/requests/2026-06-07-stdhttpclient-subset-retro-consoles.md).
-# When that library lands, gate the `import std/httpclient` below and the
-# httpclient-using procs (newOtlpHttpExporter's newHttpClient, close, sendRequest's
-# `client.request`) behind `when not defined(ds3)`, and add a `when defined(ds3):`
-# branch backed by `~/git/http` implementing the same ExportResponse surface.
-# std/httpcore is portable and can stay imported on both. The pure parts of this
-# file (ExportResponse, partial-success decoding) need no change.
-import std/httpclient
+# raw-socket `~/git/http` library, imported only under `-d:ds3`.
+when defined(ds3):
+  import http
+else:
+  import std/httpclient
 import std/httpcore
 export httpcore   ## HttpCode / Http200 etc. are part of ExportResponse's surface
 import std/json
@@ -83,6 +79,10 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
       if ep.len > 0 and not (ep.startsWith("http://") or ep.startsWith("https://")):
         raise newException(ValueError,
           "endpoint URL must start with http:// or https://: '" & ep & "'")
+      when defined(ds3):
+        if ep.len > 0 and ep.startsWith("https://"):
+          raise newException(ValueError,
+            "https endpoints are not supported on 3DS; use plaintext http://: '" & ep & "'")
 
   # Headers must not contain CR or LF characters (prevent HTTP header injection).
   for (k, v) in config.headers:
@@ -103,6 +103,8 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
         "unset OTEL_EXPORTER_OTLP_COMPRESSION (or config.compression) if not needed")
   result.config = config
   let timeout = if config.timeoutMs > 0: config.timeoutMs else: defaultTimeoutMs
+  when defined(ds3):
+    httpInit()
   result.client = newHttpClient(timeout = timeout)
   result.warn = proc (msg: string) {.gcsafe.} =
     {.cast(gcsafe).}:
@@ -113,6 +115,8 @@ proc close*(e: var OtlpHttpExporter) =
   if e.client != nil:
     e.client.close()
     e.client = nil
+    when defined(ds3):
+      httpShutdown()
 
 proc bytesToBody(payload: seq[byte]): string =
   ## Reinterpret raw bytes as an HTTP body string without re-encoding.

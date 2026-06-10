@@ -8,6 +8,11 @@
 # paths live in nim_3ds.cfg / the per-example <name>.nim.cfg. See
 # .agents/plans/3ds-support/.
 when defined(ds3):
+  let observyHttpSrc = getEnv("OBSERVY_HTTP_SRC")
+  if observyHttpSrc.len > 0:
+    switch("path", observyHttpSrc)
+  else:
+    switch("path", "../http/src")
   switch("cpu", "arm")
   switch("os", "linux")
   switch("mm", "arc")

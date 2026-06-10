@@ -35,6 +35,7 @@ nim c -r examples/metrics.nim
 ```
 
 > **Note:** `examples/nim.cfg` supplies `--mm:orc --threads:on` automatically — no extra flags needed.
+> For `-d:ds3`, the same file leaves the 3DS `arc`/`threads:off` settings alone.
 
 ### 4. See the output
 
@@ -91,3 +92,4 @@ All flags are pre-set in `examples/nim.cfg`:
 | `traces.nim` | 2 spans | Server span + child span; SpanEvent, SpanLink, attributes, Status=OK |
 | `logs.nim` | 3 log records | INFO/WARN/ERROR; trace context, structured kvlist body |
 | `metrics.nim` | 3 metric types | Counter (Sum), Gauge, Histogram; temporality selector |
+| `observy_3ds.nim` | trace + metric + log | Nintendo 3DS build, plaintext OTLP/protobuf to `10.0.0.106:4318`; build with `scripts/build_3ds.sh examples/observy_3ds.nim observy_3ds` |
