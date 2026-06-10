@@ -129,10 +129,12 @@ proc main() =
   let netRc = sceNetCtlInetGetState(addr netState)
   crumb("sceNetCtlInetGetState rc=" & $netRc & " state=" & $netState & " (3 means IP obtained)")
 
+  var rung1Ok = false
   try:
     let c = newHttpClient(timeout = 10_000)
     let resp = c.post("/v1/traces", "application/x-protobuf", "junk-from-observy-vita")
     crumb("RUNG1 finite-timeout PASS http_status=" & statusLine(resp))
+    rung1Ok = true
   except CatchableError as e:
     crumb("RUNG1 finite-timeout FAIL " & excSummary(e))
 
@@ -140,10 +142,54 @@ proc main() =
     let c = newHttpClient(timeout = -1)
     let resp = c.post("/v1/traces", "application/x-protobuf", "junk-from-observy-vita-infinite")
     crumb("RUNG1 infinite-timeout PASS http_status=" & statusLine(resp))
+    rung1Ok = true
   except CatchableError as e:
     crumb("RUNG1 infinite-timeout FAIL " & excSummary(e))
 
+  if not rung1Ok:
+    crumb("STOP RUNG1 hard failure; skipping RUNG2/RUNG3/RUNG4")
+    httpShutdown()
+    discard sceKernelExitProcess(0)
+    return
+
   var chosenNow = 0'u64
+  try:
+    chosenNow = clockRealtimeNano()
+  except CatchableError:
+    try:
+      chosenNow = rtcUnixNano()
+    except CatchableError:
+      chosenNow = 1_700_000_000_000_000_000'u64
+
+  var resAttrs = initAttributeSet()
+  resAttrs.add("service.name", AnyValue(kind: avString, strVal: "observy-vita-spike"))
+  resAttrs.add("device", AnyValue(kind: avString, strVal: "playstation-vita"))
+  resAttrs.add("observy.run.id", AnyValue(kind: avString, strVal: "vita-spike-" & $chosenNow))
+  let res = Resource(attributes: resAttrs, droppedAttributesCount: resAttrs.dropped)
+  let scope = InstrumentationScope(name: "observy-vita-spike", version: "0.1.0",
+                                   attributes: initAttributeSet())
+  let payload = encodeTraceRequest(res, scope, @[buildSpan(1, chosenNow)])
+  crumb("RUNG2 encoded trace bytes=" & $payload.len)
+
+  var rung2Ok = false
+  try:
+    let c = newHttpClient(timeout = 10_000)
+    let resp = c.post("/v1/traces", "application/x-protobuf", bytesToString(payload))
+    if int(resp.code) == 200:
+      crumb("RUNG2 PASS http_status=" & statusLine(resp))
+      rung2Ok = true
+    else:
+      crumb("RUNG2 FAIL http_status=" & statusLine(resp) & " body=" & resp.body)
+  except CatchableError as e:
+    crumb("RUNG2 FAIL " & excSummary(e))
+
+  if not rung2Ok:
+    crumb("STOP RUNG2 hard failure; skipping RUNG3/RUNG4")
+    httpShutdown()
+    discard sceKernelExitProcess(0)
+    return
+
+  chosenNow = 0'u64
   try:
     chosenNow = clockRealtimeNano()
     crumb("RUNG3 CLOCK_REALTIME PASS unix_nano=" & $chosenNow)
@@ -166,26 +212,6 @@ proc main() =
     discard sceKernelExitProcess(0)
     return
 
-  var resAttrs = initAttributeSet()
-  resAttrs.add("service.name", AnyValue(kind: avString, strVal: "observy-vita-spike"))
-  resAttrs.add("device", AnyValue(kind: avString, strVal: "playstation-vita"))
-  resAttrs.add("observy.run.id", AnyValue(kind: avString, strVal: "vita-spike-" & $chosenNow))
-  let res = Resource(attributes: resAttrs, droppedAttributesCount: resAttrs.dropped)
-  let scope = InstrumentationScope(name: "observy-vita-spike", version: "0.1.0",
-                                   attributes: initAttributeSet())
-  let payload = encodeTraceRequest(res, scope, @[buildSpan(1, chosenNow)])
-  crumb("RUNG2 encoded trace bytes=" & $payload.len)
-
-  try:
-    let c = newHttpClient(timeout = 10_000)
-    let resp = c.post("/v1/traces", "application/x-protobuf", bytesToString(payload))
-    if int(resp.code) == 200:
-      crumb("RUNG2 PASS http_status=" & statusLine(resp))
-    else:
-      crumb("RUNG2 FAIL http_status=" & statusLine(resp) & " body=" & resp.body)
-  except CatchableError as e:
-    crumb("RUNG2 FAIL " & excSummary(e))
-
   try:
     var totalBytes = 0
     for i in 0 ..< 100:
@@ -193,7 +219,7 @@ proc main() =
       totalBytes += p.len
       if i mod 10 == 9:
         crumb("RUNG4 progress cycles=" & $(i + 1) & " encoded_bytes_total=" & $totalBytes)
-    crumb("RUNG4 PASS cycles=100 encoded_bytes_total=" & $totalBytes)
+    crumb("RUNG4 encode-loop PASS cycles=100 encoded_bytes_total=" & $totalBytes)
   except CatchableError as e:
     crumb("RUNG4 FAIL " & excSummary(e))
 

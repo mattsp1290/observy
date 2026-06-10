@@ -27,6 +27,12 @@ if [[ -z "${VITASDK:-}" ]]; then
   echo "Install VitaSDK from https://vitasdk.org and bootstrap packages with vdpm." >&2
   exit 1
 fi
+if [[ "$VITASDK" != "/usr/local/vitasdk" ]]; then
+  echo "this M0 spike cfg currently assumes VITASDK=/usr/local/vitasdk" >&2
+  echo "got: $VITASDK" >&2
+  echo "M1 will productize a repo-root nim_vita.cfg/build script; keep the spike fixed-path for now." >&2
+  exit 1
+fi
 
 export PATH="$VITASDK/bin:$PATH"
 

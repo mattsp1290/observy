@@ -10,6 +10,8 @@ filled from `ux0:data/observy_vita_spike.txt`.
 ## Build
 
 - Command: `VITASDK=/usr/local/vitasdk spike/build_vita_spike.sh`
+- Collector override:
+  `NIMFLAGS_VITA='-d:CollectorEndpoint=http://<collector-ip>:4318' VITASDK=/usr/local/vitasdk spike/build_vita_spike.sh`
 - Output: `spike/build/observy_vita_spike.vpk`
 - Deploy: `curl -T spike/build/observy_vita_spike.vpk ftp://<vita-ip>:1337/ux0:/`
 - Result file: `ux0:data/observy_vita_spike.txt`
@@ -43,7 +45,7 @@ filled from `ux0:data/observy_vita_spike.txt`.
 ### Rung 4 — ARC sanity under emit loop
 
 - Status: PENDING
-- Required evidence: `RUNG4 PASS cycles=100`.
+- Required evidence: `RUNG4 encode-loop PASS cycles=100`.
 - Notes:
 
 ## Follow-Ups
