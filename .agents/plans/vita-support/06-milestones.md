@@ -1,8 +1,10 @@
 # 06 — Milestones & task breakdown
 
-> **Status (2026-06-10):** Planning complete, nothing implemented. Update
-> this block per milestone, the way `.agents/plans/3ds-support/06-milestones.md`
-> does (it is the working example of the format).
+> **Status (2026-06-10):** M0 local spike artifacts are in progress:
+> `spike/observy_vita_spike.nim`, `spike/observy_vita_spike.nim.cfg`, and
+> `spike/build_vita_spike.sh`. GO/NO-GO remains pending until the `.vpk` is run
+> on real Vita hardware and `.agents/plans/vita-support/SPIKE-NOTES.md` is
+> filled from `ux0:data/observy_vita_spike.txt`.
 
 Sequenced milestones with acceptance criteria. Beads granularity: **one
 issue per milestone** (the 3DS precedent — `observy-8vi` covered all of M0),
