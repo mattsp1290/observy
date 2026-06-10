@@ -3,11 +3,11 @@
 # Desktop (default): consumers compile with --mm:orc --threads:on. This branch
 # MUST stay byte-equivalent to the original — the whole test suite runs through it.
 #
-# Nintendo 3DS (-d:ds3): devkitARM/libctru, no pthreads, arc, newlib allocator.
-# The synchronous record() path only (no BatchProcessor/threads/retry). Toolchain
-# paths live in nim_3ds.cfg / the per-example <name>.nim.cfg. See
-# .agents/plans/3ds-support/.
-when defined(ds3):
+# Nintendo 3DS (-d:ds3) and PlayStation Vita (-d:vita): ARM console builds,
+# no pthreads for MVP, arc, newlib allocator. The synchronous record() path only
+# (no BatchProcessor/threads/retry). Toolchain paths live in nim_3ds.cfg,
+# spike/*.nim.cfg, and later nim_vita.cfg. See .agents/plans/*-support/.
+when defined(ds3) or defined(vita):
   let observyHttpSrc = getEnv("OBSERVY_HTTP_SRC")
   if observyHttpSrc.len > 0:
     switch("path", observyHttpSrc)
