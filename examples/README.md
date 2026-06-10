@@ -92,4 +92,4 @@ All flags are pre-set in `examples/nim.cfg`:
 | `traces.nim` | 2 spans | Server span + child span; SpanEvent, SpanLink, attributes, Status=OK |
 | `logs.nim` | 3 log records | INFO/WARN/ERROR; trace context, structured kvlist body |
 | `metrics.nim` | 3 metric types | Counter (Sum), Gauge, Histogram; temporality selector |
-| `observy_3ds.nim` | trace + metric + log | Nintendo 3DS build, plaintext OTLP/protobuf to `10.0.0.106:4318`; build with `scripts/build_3ds.sh examples/observy_3ds.nim observy_3ds` |
+| `observy_3ds.nim` | trace + metric + log | Nintendo 3DS build, plaintext OTLP/protobuf to `10.0.0.106:4318`; build with `scripts/build_3ds.sh examples/observy_3ds.nim observy_3ds`; set `NIMFLAGS_3DS='-d:Observy3dsUtcOffsetSec=<seconds>'` if the 3DS/Azahar wall clock is local time rather than UTC |

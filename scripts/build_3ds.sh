@@ -13,6 +13,7 @@ Examples:
 
 Environment:
   OBSERVY_HTTP_SRC  Path to the ~/git/http src directory (default: ../http/src)
+  NIMFLAGS_3DS      Extra flags passed to nim c for this build
 
 --run deploys the built .3dsx with 3dslink after a successful build.
 USAGE
@@ -84,7 +85,11 @@ trap cleanup EXIT
 cp -f "$template_cfg" "$nim_cfg"
 
 cd "$repo_root"
-nim c -d:ds3 -d:release --path:"$http_src" --out:"$build_dir/$name.elf" "$target"
+extra_flags=()
+if [[ -n "${NIMFLAGS_3DS:-}" ]]; then
+  read -r -a extra_flags <<< "$NIMFLAGS_3DS"
+fi
+nim c -d:ds3 -d:release --path:"$http_src" "${extra_flags[@]}" --out:"$build_dir/$name.elf" "$target"
 3dsxtool "$build_dir/$name.elf" "$build_dir/$name.3dsx"
 
 echo "built $build_dir/$name.3dsx"

@@ -9,6 +9,13 @@ via `pup`.
 `examples/observy_3ds.nim` (guarded `when defined(ds3)`), built by
 `scripts/build_3ds.sh examples/observy_3ds.nim observy_3ds`.
 
+> Verification note from the Azahar run (2026-06-10): Azahar exposed the 3DS wall
+> clock as EDT local time, not UTC. Build the example with
+> `NIMFLAGS_3DS='-d:Observy3dsUtcOffsetSec=14400'` in that environment so metric
+> timestamps land within Datadog's current custom-metric window. Real hardware
+> may need `0` if its RTC/user-time source is already UTC-like, or the local
+> offset if it behaves like Azahar.
+
 Structure:
 
 > ⚠️ The snippet below is **grounded against the real observy API** (see

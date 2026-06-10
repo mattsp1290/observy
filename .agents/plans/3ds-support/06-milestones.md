@@ -1,6 +1,6 @@
 # 06 — Milestones & task breakdown
 
-> **Status (2026-06-09, branch `feat/3ds-support`):**
+> **Status (2026-06-10, branch `feat/3ds-support`):**
 > - **M0 — DONE (GO).** Spike passed all rungs on Azahar vs the live collector
 >   (encoders → HTTP 200; `std/httpclient` ruled out; time source validated).
 >   Closed: `observy-8vi`. See `SPIKE-NOTES.md`.
@@ -13,10 +13,14 @@
 > - **M2 — DONE for implementation gates.** `time_3ds.nim` uses the M0-validated
 >   `osGetTime` epoch conversion. The 3DS synchronous `record()` path does not call
 >   `defaultRetryHooks()` and excludes BatchProcessor.
-> - **M3/M4 — remaining live verification.** `examples/observy_3ds.nim` builds to
->   `.3dsx`; the remaining proof is running it on hardware/Azahar against the LAN
->   collector, confirming 200s for traces/metrics/logs, then querying Datadog via
->   `pup`.
+> - **M3/M4 — DONE on Azahar against the LAN collector + Datadog us3.**
+>   Built with `NIMFLAGS_3DS='-d:Observy3dsUtcOffsetSec=14400'` because Azahar's
+>   exposed 3DS wall clock matched EDT local time; Datadog metrics require UTC-ish
+>   timestamps. Run `3ds-1781063828225000000` wrote `PASS` to
+>   `sdmc:/observy_3ds_result.txt` with traces/metrics/logs all returning HTTP 200
+>   from `10.0.0.106:4318`. `pup` confirmed the trace, log, and
+>   `observy.3ds.boot.gauge` metric in Datadog with timestamp
+>   `2026-06-10T03:57:08Z`.
 
 Sequenced milestones with acceptance criteria. Each bullet maps cleanly to a
 beads issue when work starts. M0/M1/M2 partially implemented (see status above);
