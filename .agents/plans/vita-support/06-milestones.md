@@ -1,10 +1,18 @@
 # 06 — Milestones & task breakdown
 
-> **Status (2026-06-11):** M0 is GO. The Vita hardware run passed all rungs;
-> `CLOCK_REALTIME` and `sceRtcGetCurrentTick` both produced correct UTC Unix
-> timestamps, with `CLOCK_REALTIME` chosen for M2. M1 and M2 are implemented:
-> Vita/3DS semantic checks, productized Vita spike build, 3DS regression build,
-> Vita nimcache grep, desktop import trap, and `nimble test -y` passed. See
+> **Status (2026-06-11):** M0 through M4 are GO. The M0 Vita hardware run
+> passed all rungs; `CLOCK_REALTIME` and `sceRtcGetCurrentTick` both produced
+> correct UTC Unix timestamps, with `CLOCK_REALTIME` chosen for M2. M1 and M2
+> are implemented: Vita/3DS semantic checks, productized Vita spike build, 3DS
+> regression build, Vita nimcache grep, desktop import trap, and `nimble test -y`
+> passed. M3/M4 hardware run id `vita-1781153572081310000` wrote
+> `ux0:data/observy_vita_result.txt` ending `PASS`, with `traces.code=200`,
+> `metrics.code=200`, `logs.code=200`, and netctl state 3. Mounted readback
+> SHA-256: `c967e58298694d3b161407eaeec1ad5665ec2118a316165c3f3755c9cfb0f3eb`.
+> Datadog `pup` verification on `us3.datadoghq.com` found APM spans for
+> `service:observy-vita-verify` at `2026-06-11T04:52:52.081Z`, a log with
+> message `observy Vita verification` and `device=playstation-vita`, and
+> metric `observy.vita.boot.gauge` value `1.0`. See
 > `.agents/plans/vita-support/SPIKE-NOTES.md` for raw M0 output and SHA-256.
 
 Sequenced milestones with acceptance criteria. Beads granularity: **one
@@ -79,23 +87,24 @@ wall clock in rung 3 → pause, consult user.
 
 ## M3 — Vita example app · `05-example-and-verification.md`
 
-- [ ] `examples/observy_vita.nim` → `build/observy_vita.vpk` via
+- [x] `examples/observy_vita.nim` → `build/observy_vita.vpk` via
       `scripts/build_vita.sh`.
-- [ ] Headless; per-step breadcrumbs to `ux0:data/observy_vita_result.txt`
+- [x] Headless; per-step breadcrumbs to `ux0:data/observy_vita_result.txt`
       (rewrite-per-crumb pattern, netctl state, per-signal try/except);
       exits cleanly. A no-network run ends `FAIL <detail>`, not a crash.
-- [ ] On hardware: HTTP 200 recorded for traces, metrics, logs.
-- [ ] Signals visible in collector debug/file exporter.
-- [ ] `examples/README.md`: `observy_vita.nim` row added (build command,
+- [x] On hardware: HTTP 200 recorded for traces, metrics, logs.
+- [x] Signals visible downstream through the collector path (Datadog pup
+      verification for trace/log/metric).
+- [x] `examples/README.md`: `observy_vita.nim` row added (build command,
       `NIMFLAGS_VITA` / `ObservyVitaUtcOffsetSec` hints); nim.cfg note
       extended to mention vita.
 
 ## M4 — Datadog verification via pup · `05-example-and-verification.md`
 
-- [ ] Trace from `observy-vita-verify` in Datadog APM, sensible timestamp.
-- [ ] Log line with `device:playstation-vita` + run id present.
-- [ ] Metric `observy.vita.boot.gauge` present.
-- [ ] Timestamps correct end-to-end; run id + queries recorded in the
+- [x] Trace from `observy-vita-verify` in Datadog APM, sensible timestamp.
+- [x] Log line with `device:playstation-vita` + run id present.
+- [x] Metric `observy.vita.boot.gauge` present.
+- [x] Timestamps correct end-to-end; run id + queries recorded in the
       status block above.
 
 ---
