@@ -6,22 +6,26 @@
 ##     Span/SpanEvent/SpanLink, LogRecord, Metric (+ data-point types)
 ##   - encoders: protoEncode*/jsonEncode* and the per-signal spanToJson /
 ##     logRecordsToJson / metricToJson request builders
-##   - transport: OtlpHttpExporter (newOtlpExporter), sendSignal, retryWithBackoff,
+##   - transport: OtlpHttpExporter (newOtlpExporter), sendSignal,
 ##     partial-success handling (handleResponse)
-##   - batching: BatchProcessor[T] with start/submit/forceFlush/shutdown
+##   - retry: retryWithBackoff (desktop)
+##   - batching: BatchProcessor[T] with start/submit/forceFlush/shutdown (desktop)
 ##   - config: ExporterConfig / loadFromEnv (OTEL_* env vars)
 ##
 ## Style (after zippy/puppy): value types, shallow object nesting, small surface,
 ## zero Nimble dependencies (OpenSSL only for HTTPS via -d:ssl). Compile desktop
 ## consumers with `--mm:orc --threads:on`.
 ##
-## Nintendo 3DS (`-d:ds3`): builds `--mm:arc --threads:off` (see config.nims).
-## The async BatchProcessor (batch.nim) and the `record(BatchProcessor, item)`
-## overloads are unavailable there; use the synchronous
+## Nintendo 3DS (`-d:ds3`) and PlayStation Vita (`-d:vita`) build
+## `--mm:arc --threads:off` (see config.nims). The async BatchProcessor
+## (batch.nim) and the `record(BatchProcessor, item)` overloads are unavailable
+## there; retryWithBackoff is also unavailable there because its default hooks
+## use `std/times`/`std/monotimes`. Use the synchronous
 ## `record(exporter, resource, scope, items)` path. Source timestamps from
-## `observy/time_3ds` (osGetTime), never `std/times` at runtime. The HTTP
-## transport on 3DS is the raw-socket `~/git/http` library, not std/httpclient
-## (which does not compile for devkitARM). See `.agents/plans/3ds-support/`.
+## `observy/time_3ds` (osGetTime) or `observy/time_vita`
+## (clock_gettime(CLOCK_REALTIME)), never `std/times` at runtime. The HTTP
+## transport on these consoles is the raw-socket `~/git/http` library, not
+## std/httpclient. See `.agents/plans/{3ds,vita}-support/`.
 ##
 ## Profiles (alpha) are gated behind `-d:observyProfiles`.
 
@@ -34,11 +38,11 @@ import observy/metrics;       export metrics
 import observy/logs;          export logs
 import observy/config;        export config
 import observy/exporter_http; export exporter_http
-import observy/retry;         export retry
-when not defined(ds3):
+when not (defined(ds3) or defined(vita)):
+  import observy/retry;       export retry
   # batch.nim is a worker thread + system.Channel processor — requires
-  # --threads:on, which the 3DS build (--threads:off) does not have. The 3DS
-  # uses the synchronous record() path only. See .agents/plans/3ds-support/.
+  # --threads:on, which the console builds (--threads:off) do not have. 3DS/Vita
+  # use the synchronous record() path only.
   import observy/batch;       export batch
 
 when defined(observyProfiles):
@@ -123,9 +127,9 @@ proc strToBytes(s: string): seq[byte] =
 # ---------------------------------------------------------------------------
 
 # The BatchProcessor record() overloads are async (worker thread + Channel) and
-# exist only off the 3DS (batch.nim is gated above on --threads:on). The 3DS uses
-# the synchronous record(exporter, resource, scope, items) overloads below.
-when not defined(ds3):
+# exist only off the console builds (batch.nim is gated above on --threads:on).
+# 3DS/Vita use the synchronous record(exporter, resource, scope, items) overloads.
+when not (defined(ds3) or defined(vita)):
   # Instantiating BatchProcessor[Span|LogRecord|Metric] makes the compiler generate
   # Isolated[T].=destroy for these types; std/isolation's =destroy is conservatively
   # inferred as possibly-raising, producing a spurious [Effect] warning at the

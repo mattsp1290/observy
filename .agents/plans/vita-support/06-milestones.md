@@ -2,8 +2,10 @@
 
 > **Status (2026-06-11):** M0 is GO. The Vita hardware run passed all rungs;
 > `CLOCK_REALTIME` and `sceRtcGetCurrentTick` both produced correct UTC Unix
-> timestamps, with `CLOCK_REALTIME` chosen for M2. See
-> `.agents/plans/vita-support/SPIKE-NOTES.md` for raw output and SHA-256.
+> timestamps, with `CLOCK_REALTIME` chosen for M2. M1 and M2 are implemented:
+> Vita/3DS semantic checks, productized Vita spike build, 3DS regression build,
+> Vita nimcache grep, desktop import trap, and `nimble test -y` passed. See
+> `.agents/plans/vita-support/SPIKE-NOTES.md` for raw M0 output and SHA-256.
 
 Sequenced milestones with acceptance criteria. Beads granularity: **one
 issue per milestone** (the 3DS precedent — `observy-8vi` covered all of M0),
@@ -48,32 +50,32 @@ wall clock in rung 3 → pause, consult user.
 
 ## M1 — Build toolchain & conditional compile · `03-build-toolchain.md`
 
-- [ ] `config.nims:10` condition extended to `or defined(vita)`; desktop
+- [x] `config.nims:10` condition extended to `or defined(vita)`; desktop
       branch unchanged, `nimble test -y` green.
-- [ ] `nim_vita.cfg` added (headless: sceNet stubs only, `-Wl,-q`, no
+- [x] `nim_vita.cfg` added (headless: sceNet stubs only, `-Wl,-q`, no
       graphics; cribbed from `/Users/punk1290/git/boxy/nim_vita.cfg`).
-- [ ] `stubs/` reused; `stubs/README.md` gains the Vita paragraph.
-- [ ] `scripts/build_vita.sh` (nim.cfg copy + EXIT trap, tool checks,
+- [x] `stubs/` reused; `stubs/README.md` gains the Vita paragraph.
+- [x] `scripts/build_vita.sh` (nim.cfg copy + EXIT trap, tool checks,
       velf→fself→sfo + zip-staged `.vpk` per boxy/clckr's proven scripts,
       TITLE_ID `OBSV00001`).
-- [ ] `examples/nim.cfg` excludes vita from the orc/threads block
+- [x] `examples/nim.cfg` excludes vita from the orc/threads block
       (`@if not ds3 and not vita:` — spelling confirmed on Nim 2.2.10).
-- [ ] `src/observy.nim:38,:128` batch gates extended;
+- [x] `src/observy.nim:38,:128` batch gates extended;
       `exporter_http.nim:15,82,106,118` gates extended; seam comment and
       https error text updated; `observy.nim:18` docstring updated.
-- [ ] `nim check -d:vita --path:../http/src src/observy.nim` green.
-- [ ] Regression: `nim check -d:ds3 …` green and
+- [x] `nim check -d:vita --path:../http/src src/observy.nim` green.
+- [x] Regression: `nim check -d:ds3 …` green and
       `scripts/build_3ds.sh examples/observy_3ds.nim observy_3ds` still builds.
 
 ## M2 — Platform abstraction (time) · `04-platform-abstraction.md`
 
-- [ ] `src/observy/time_vita.nim`: `nowUnixMillis`/`nowUnixNano` from the
+- [x] `src/observy/time_vita.nim`: `nowUnixMillis`/`nowUnixNano` from the
       M0-validated source; desktop import `{.error.}`; signatures match
       `time_3ds.nim`.
-- [ ] On-device timestamp validated against a wall-clock reference.
-- [ ] No `defaultRetryHooks()`/`std/times` runtime call reachable from the
+- [x] On-device timestamp validated against a wall-clock reference.
+- [x] No `defaultRetryHooks()`/`std/times` runtime call reachable from the
       Vita `record()` path.
-- [ ] Doc: "set the Vita clock or Datadog rejects the data."
+- [x] Doc: "set the Vita clock or Datadog rejects the data."
 
 ## M3 — Vita example app · `05-example-and-verification.md`
 
