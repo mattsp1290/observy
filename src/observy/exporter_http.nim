@@ -6,13 +6,12 @@
 # TLS (https endpoints) works automatically when compiled with -d:ssl (OpenSSL);
 # plaintext http needs no external dependencies. gRPC/HTTP2 is out of scope.
 #
-# ── 3DS / retro-console transport seam ───────────────────────────────────────
-# std/httpclient does NOT compile for the Nintendo 3DS (-d:ds3): it pulls
-# std/nativesockets, which fails on `AF_UNIX undeclared` against libctru's
-# socket-header subset (proven in the M0 spike; see
-# .agents/plans/3ds-support/SPIKE-NOTES.md). The chosen transport there is the
-# raw-socket `~/git/http` library, imported only under `-d:ds3`.
-when defined(ds3):
+# ── retro-console transport seam ─────────────────────────────────────────────
+# std/httpclient is not the console transport. 3DS (-d:ds3) uses raw sockets
+# because std/nativesockets fails against libctru's socket-header subset
+# (3DS M0). Vita (-d:vita) uses the same `~/git/http` facade over
+# sockets_vita.nim, runtime-proven in `.agents/plans/vita-support/SPIKE-NOTES.md`.
+when defined(ds3) or defined(vita):
   import http
 else:
   import std/httpclient
@@ -79,10 +78,10 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
       if ep.len > 0 and not (ep.startsWith("http://") or ep.startsWith("https://")):
         raise newException(ValueError,
           "endpoint URL must start with http:// or https://: '" & ep & "'")
-      when defined(ds3):
+      when defined(ds3) or defined(vita):
         if ep.len > 0 and ep.startsWith("https://"):
           raise newException(ValueError,
-            "https endpoints are not supported on 3DS; use plaintext http://: '" & ep & "'")
+            "https endpoints are not supported on 3DS/Vita; use plaintext http://: '" & ep & "'")
 
   # Headers must not contain CR or LF characters (prevent HTTP header injection).
   for (k, v) in config.headers:
@@ -103,7 +102,7 @@ proc newOtlpHttpExporter*(config: ExporterConfig): OtlpHttpExporter =
         "unset OTEL_EXPORTER_OTLP_COMPRESSION (or config.compression) if not needed")
   result.config = config
   let timeout = if config.timeoutMs > 0: config.timeoutMs else: defaultTimeoutMs
-  when defined(ds3):
+  when defined(ds3) or defined(vita):
     httpInit()
   result.client = newHttpClient(timeout = timeout)
   result.warn = proc (msg: string) {.gcsafe.} =
@@ -115,7 +114,7 @@ proc close*(e: var OtlpHttpExporter) =
   if e.client != nil:
     e.client.close()
     e.client = nil
-    when defined(ds3):
+    when defined(ds3) or defined(vita):
       httpShutdown()
 
 proc bytesToBody(payload: seq[byte]): string =
