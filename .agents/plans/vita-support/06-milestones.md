@@ -1,10 +1,9 @@
 # 06 — Milestones & task breakdown
 
-> **Status (2026-06-10):** M0 local spike artifacts are in progress:
-> `spike/observy_vita_spike.nim`, `spike/observy_vita_spike.nim.cfg`, and
-> `spike/build_vita_spike.sh`. GO/NO-GO remains pending until the `.vpk` is run
-> on real Vita hardware and `.agents/plans/vita-support/SPIKE-NOTES.md` is
-> filled from `ux0:data/observy_vita_spike.txt`.
+> **Status (2026-06-11):** M0 is GO. The Vita hardware run passed all rungs;
+> `CLOCK_REALTIME` and `sceRtcGetCurrentTick` both produced correct UTC Unix
+> timestamps, with `CLOCK_REALTIME` chosen for M2. See
+> `.agents/plans/vita-support/SPIKE-NOTES.md` for raw output and SHA-256.
 
 Sequenced milestones with acceptance criteria. Beads granularity: **one
 issue per milestone** (the 3DS precedent — `observy-8vi` covered all of M0),
@@ -29,19 +28,19 @@ If M0 finds `sockets_vita.nim` bugs, the fixes are `~/git/http` work items
 
 ## M0 — Networking + time spike (GO/NO-GO) · `02-networking-spike.md`
 
-- [ ] Spike build artifacts checked in under `spike/` (cfg from
+- [x] Spike build artifacts checked in under `spike/` (cfg from
       `03-build-toolchain.md` §2 — boxy's cfg alone lacks the net stubs —
       plus `build_vita_spike.sh`, mirroring the 3DS `spike/build_spike.sh`).
-- [ ] Rung 1: `httpInit()` + `sceNetCtlInetGetState` breadcrumb + raw POST
+- [x] Rung 1: `httpInit()` + `sceNetCtlInetGetState` breadcrumb + raw POST
       from real Vita gets an HTTP status line from `10.0.0.106:4318`
       (proves sceNet bring-up, posix sockets, monotonic-clock timeouts in
       `~/git/http`'s `sockets_vita.nim`).
-- [ ] Rung 2: collector returns 200 for an observy-encoded trace.
-- [ ] Rung 3: wall-clock source decided (newlib `CLOCK_REALTIME` vs
+- [x] Rung 2: collector returns 200 for an observy-encoded trace.
+- [x] Rung 3: wall-clock source decided (newlib `CLOCK_REALTIME` vs
       `sceRtcGetCurrentTick` vs none) with on-device date validation;
       UTC-vs-local recorded.
-- [ ] Rung 4: ~100-cycle emit loop survives under arc.
-- [ ] `SPIKE-NOTES.md` written (durable: SCE error codes, chosen time
+- [x] Rung 4: ~100-cycle encode loop survives under arc.
+- [x] `SPIKE-NOTES.md` written (durable: SCE error codes, chosen time
       source, `~/git/http` fixes if any, GO/NO-GO).
 
 **Gate:** Rung 1 unfixable in `~/git/http` → NO-GO, escalate. No working

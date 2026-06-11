@@ -1,11 +1,13 @@
 # Vita M0 Spike Notes
 
-**GO/NO-GO (2026-06-10): PENDING HARDWARE RUN.**
+**GO/NO-GO (2026-06-11): GO.**
 
-Local spike artifacts have been added under `spike/`, but the actual M0 gate
-requires running `build/observy_vita_spike.vpk` on a real Henkaku-enabled Vita.
-Do not close `observy-yn5` or unblock M1/M2 until the per-rung evidence below is
-filled from `ux0:data/observy_vita_spike.txt`.
+The M0 spike ran on real Vita hardware and all required rungs passed. The Vita
+result file was read back from `ux0:data/observy_vita_spike.txt` after mounting
+the memory card at `/Volumes/Untitled`; it was copied to
+`/tmp/observy_vita_spike_result.txt`, and `shasum -a 256` reported
+`f16056ebf964bb0b022f92bd4a71d52a4e244beb94219d8d4e2c061547aab534` for both
+the mounted file and the copy.
 
 ## Build
 
@@ -20,35 +22,74 @@ filled from `ux0:data/observy_vita_spike.txt`.
 
 ### Rung 1 — sceNet bring-up + raw HTTP POST
 
-- Status: PENDING
-- Required evidence: `httpInit PASS`, `sceNetCtlInetGetState ... state=3`, and
-  at least one `RUNG1 ... PASS http_status=...` line.
-- SCE/http errors:
+- Status: PASS
+- Evidence:
+  - `httpInit PASS`
+  - `sceNetCtlInetGetState rc=0 state=3 (3 means IP obtained)`
+  - `RUNG1 finite-timeout PASS http_status=400 400 Bad Request`
+  - `RUNG1 infinite-timeout PASS http_status=400 400 Bad Request`
+- SCE/http errors: none.
 
 ### Rung 2 — observy encoders over real transport
 
-- Status: PENDING
-- Required evidence: `RUNG2 PASS http_status=200`.
-- Encoded payload bytes:
-- Collector response:
+- Status: PASS
+- Evidence: `RUNG2 PASS http_status=200 200 OK`.
+- Encoded payload bytes: 316.
+- Collector response: HTTP 200.
 
 ### Rung 3 — wall-clock source decision
 
-- Status: PENDING
-- Required evidence: one timestamp source produces today's UTC date within
-  seconds of a reference clock.
-- `CLOCK_REALTIME`:
-- `sceRtcGetCurrentTick`:
-- UTC vs local:
-- Chosen source for `time_vita.nim`:
+- Status: PASS
+- `CLOCK_REALTIME`: `1781150558582067000` ns =
+  `2026-06-11T04:02:38.582067012Z`.
+- `sceRtcGetCurrentTick`: `1781150558585766000` ns =
+  `2026-06-11T04:02:38.585765838Z`, `sceRtcGetTickResolution() = 1000000`.
+- UTC vs local: readings produced the correct UTC date and wall-clock minute for
+  the run. The mounted card listed `ux0:data/observy_vita_spike.txt` with
+  modified time `Jun 11 00:02` local (`2026-06-11T04:02Z`), matching the
+  `CLOCK_REALTIME` and `sceRtcGetCurrentTick` readings at `04:02:38Z`. A later
+  dev-machine clock check at `2026-06-11T04:05:55Z` was readback time, not the
+  near-simultaneous run reference.
+- Chosen source for `time_vita.nim`: newlib `clock_gettime(CLOCK_REALTIME)`.
+  `sceRtcGetCurrentTick` is validated as a fallback and uses the planned
+  year-1-to-Unix epoch conversion.
 
-### Rung 4 — ARC sanity under emit loop
+### Rung 4 — ARC sanity under encode loop
 
-- Status: PENDING
-- Required evidence: `RUNG4 encode-loop PASS cycles=100`.
-- Notes:
+- Status: PASS
+- Evidence: `RUNG4 encode-loop PASS cycles=100 encoded_bytes_total=31694`.
+- Notes: encode loop wrote progress every 10 cycles and completed without crash.
 
 ## Follow-Ups
 
-- `~/git/http` fixes required:
-- VitaSDK/toolchain issues:
+- `~/git/http` fixes required: none from M0.
+- VitaSDK/toolchain issues: none from M0.
+- Net pool size adequacy: the `~/git/http` default Vita net pool was sufficient
+  for Rung 1 raw POSTs and the Rung 2 observy-encoded trace POST.
+
+## Raw Result
+
+```text
+START observy Vita M0 spike
+collector=http://10.0.0.106:4318
+httpInit PASS
+sceNetCtlInetGetState rc=0 state=3 (3 means IP obtained)
+RUNG1 finite-timeout PASS http_status=400 400 Bad Request
+RUNG1 infinite-timeout PASS http_status=400 400 Bad Request
+RUNG2 encoded trace bytes=316
+RUNG2 PASS http_status=200 200 OK
+RUNG3 CLOCK_REALTIME PASS unix_nano=1781150558582067000
+RUNG3 sceRtcGetCurrentTick PASS unix_nano=1781150558585766000 resolution=1000000
+RUNG4 progress cycles=10 encoded_bytes_total=3162
+RUNG4 progress cycles=20 encoded_bytes_total=6332
+RUNG4 progress cycles=30 encoded_bytes_total=9502
+RUNG4 progress cycles=40 encoded_bytes_total=12672
+RUNG4 progress cycles=50 encoded_bytes_total=15842
+RUNG4 progress cycles=60 encoded_bytes_total=19012
+RUNG4 progress cycles=70 encoded_bytes_total=22182
+RUNG4 progress cycles=80 encoded_bytes_total=25352
+RUNG4 progress cycles=90 encoded_bytes_total=28522
+RUNG4 progress cycles=100 encoded_bytes_total=31694
+RUNG4 encode-loop PASS cycles=100 encoded_bytes_total=31694
+DONE inspect rung PASS/FAIL lines and compare RUNG3 timestamps to UTC wall clock
+```
