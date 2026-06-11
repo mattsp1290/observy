@@ -23,7 +23,17 @@ build state, not source.
 
 ## Create them (one-time per checkout)
 
+For 3DS builds:
+
 ```sh
 arm-none-eabi-ar rcs stubs/libdl.a    # GNU ar; macOS BSD ar rejects empty archives
 arm-none-eabi-ar rcs stubs/librt.a
+```
+
+For Vita builds, `scripts/build_vita.sh` creates these automatically with the
+Vita toolchain when missing. To create them manually:
+
+```sh
+arm-vita-eabi-ar rcs stubs/libdl.a
+arm-vita-eabi-ar rcs stubs/librt.a
 ```

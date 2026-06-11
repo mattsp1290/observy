@@ -6,7 +6,7 @@
 ##     Span/SpanEvent/SpanLink, LogRecord, Metric (+ data-point types)
 ##   - encoders: protoEncode*/jsonEncode* and the per-signal spanToJson /
 ##     logRecordsToJson / metricToJson request builders
-##   - transport: OtlpHttpExporter (newOtlpExporter), sendSignal, retryWithBackoff,
+##   - transport: OtlpHttpExporter (newOtlpExporter), sendSignal,
 ##     partial-success handling (handleResponse)
 ##   - retry: retryWithBackoff (desktop)
 ##   - batching: BatchProcessor[T] with start/submit/forceFlush/shutdown (desktop)

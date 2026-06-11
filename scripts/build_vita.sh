@@ -78,17 +78,17 @@ if [[ ! -d "$http_src" ]]; then
   exit 1
 fi
 
+if [[ -e "$nim_cfg" ]]; then
+  echo "$nim_cfg already exists; refusing to overwrite it" >&2
+  exit 1
+fi
+
 mkdir -p "$repo_root/stubs" "$build_dir"
 if [[ ! -f "$repo_root/stubs/libdl.a" ]]; then
   arm-vita-eabi-ar rcs "$repo_root/stubs/libdl.a"
 fi
 if [[ ! -f "$repo_root/stubs/librt.a" ]]; then
   arm-vita-eabi-ar rcs "$repo_root/stubs/librt.a"
-fi
-
-if [[ -e "$nim_cfg" ]]; then
-  echo "$nim_cfg already exists; refusing to overwrite it" >&2
-  exit 1
 fi
 
 cleanup() {
@@ -116,6 +116,7 @@ rm -rf "$stage"
 mkdir -p "$stage/sce_sys"
 cp -f "$build_dir/eboot.bin" "$stage/"
 cp -f "$build_dir/param.sfo" "$stage/sce_sys/"
+rm -f "$build_dir/$name.vpk"
 ( cd "$stage" && zip -qr "../$name.vpk" . )
 
 echo "built $build_dir/$name.vpk"
