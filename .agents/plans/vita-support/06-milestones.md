@@ -79,14 +79,14 @@ wall clock in rung 3 → pause, consult user.
 
 ## M3 — Vita example app · `05-example-and-verification.md`
 
-- [ ] `examples/observy_vita.nim` → `build/observy_vita.vpk` via
+- [x] `examples/observy_vita.nim` → `build/observy_vita.vpk` via
       `scripts/build_vita.sh`.
-- [ ] Headless; per-step breadcrumbs to `ux0:data/observy_vita_result.txt`
+- [x] Headless; per-step breadcrumbs to `ux0:data/observy_vita_result.txt`
       (rewrite-per-crumb pattern, netctl state, per-signal try/except);
       exits cleanly. A no-network run ends `FAIL <detail>`, not a crash.
 - [ ] On hardware: HTTP 200 recorded for traces, metrics, logs.
 - [ ] Signals visible in collector debug/file exporter.
-- [ ] `examples/README.md`: `observy_vita.nim` row added (build command,
+- [x] `examples/README.md`: `observy_vita.nim` row added (build command,
       `NIMFLAGS_VITA` / `ObservyVitaUtcOffsetSec` hints); nim.cfg note
       extended to mention vita.
 
