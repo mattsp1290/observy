@@ -9,7 +9,6 @@
 when not defined(vita):
   {.error: "examples/observy_vita.nim must be built with scripts/build_vita.sh (-d:vita)".}
 else:
-  import std/os
   import std/strutils
 
   import observy
@@ -26,13 +25,15 @@ else:
     {.importc, header: "<psp2/net/netctl.h>".}
   proc sceKernelExitProcess(status: cint): cint
     {.importc, header: "<psp2/kernel/processmgr.h>", discardable.}
+  proc mkdir(path: cstring; mode: cint): cint
+    {.importc, header: "<sys/stat.h>", discardable.}
 
   var crumbs: seq[string]
 
   proc crumb(line: string) =
     crumbs.add(line)
     try:
-      createDir("ux0:data")
+      mkdir("ux0:data", 0o777.cint)
       writeFile(ResultPath, crumbs.join("\n") & "\n")
     except CatchableError:
       discard
