@@ -81,16 +81,19 @@ else:
     fillIdBytes(result, t0 xor salt)
     result[0] = result[0] or 0x01'u8
 
-  proc markerAttrs(): AttributeSet =
+  proc markerAttrs(runId = ""): AttributeSet =
     result = initAttributeSet()
     result.add("device", AnyValue(kind: avString, strVal: "playstation-vita"))
+    if runId.len > 0:
+      result.add("observy.run.id", AnyValue(kind: avString, strVal: runId))
 
-  proc buildSpans(t0: uint64; traceId: TraceId; rootId, childId: SpanId): seq[Span] =
-    var rootAttrs = markerAttrs()
+  proc buildSpans(t0: uint64; traceId: TraceId; rootId, childId: SpanId;
+                  runId: string): seq[Span] =
+    var rootAttrs = markerAttrs(runId)
     rootAttrs.add("example", AnyValue(kind: avString, strVal: "observy_vita"))
-    var childAttrs = markerAttrs()
+    var childAttrs = markerAttrs(runId)
     childAttrs.add("step", AnyValue(kind: avString, strVal: "child"))
-    var eventAttrs = markerAttrs()
+    var eventAttrs = markerAttrs(runId)
     @[
       Span(
         traceId: traceId,
@@ -120,8 +123,8 @@ else:
         status: SpanStatus(code: statusOk))
     ]
 
-  proc buildMetrics(t0: uint64): seq[Metric] =
-    var attrs = markerAttrs()
+  proc buildMetrics(t0: uint64; runId: string): seq[Metric] =
+    var attrs = markerAttrs(runId)
     let gauge = Metric(
       name: "observy.vita.boot.gauge",
       description: "Vita observy verification gauge",
@@ -137,8 +140,7 @@ else:
     @[gauge]
 
   proc buildLog(t0: uint64; traceId: TraceId; spanId: SpanId; runId: string): LogRecord =
-    var attrs = markerAttrs()
-    attrs.add("observy.run.id", AnyValue(kind: avString, strVal: runId))
+    var attrs = markerAttrs(runId)
     LogRecord(
       timeUnixNano: t0,
       observedTimeUnixNano: t0,
@@ -153,8 +155,12 @@ else:
   proc offsetUnixNano(rawT0: uint64): uint64 =
     let offsetNanos = ObservyVitaUtcOffsetSec.int64 * 1_000_000_000'i64
     if offsetNanos >= 0:
+      if rawT0 > uint64.high - uint64(offsetNanos):
+        raise newException(ValueError, "ObservyVitaUtcOffsetSec overflows timestamp")
       rawT0 + uint64(offsetNanos)
     else:
+      if rawT0 < uint64(-offsetNanos):
+        raise newException(ValueError, "ObservyVitaUtcOffsetSec underflows timestamp")
       rawT0 - uint64(-offsetNanos)
 
   proc main() =
@@ -183,6 +189,7 @@ else:
     var metricsCode = -1
     var logsCode = -1
     var failed = false
+    var finalLine = ""
 
     try:
       var cfg = buildConfig()
@@ -195,7 +202,7 @@ else:
       crumb("sceNetCtlInetGetState rc=" & $netRc & " state=" & $netState & " (3 means IP obtained)")
 
       try:
-        let resp = exporter.record(resource, scope, buildSpans(t0, traceId, rootId, childId))
+        let resp = exporter.record(resource, scope, buildSpans(t0, traceId, rootId, childId, runId))
         tracesCode = codeInt(resp)
         crumb("traces.code=" & $tracesCode)
         if tracesCode != 200: failed = true
@@ -204,7 +211,7 @@ else:
         crumb("traces.error=" & excSummary(e))
 
       try:
-        let resp = exporter.record(resource, scope, buildMetrics(t0))
+        let resp = exporter.record(resource, scope, buildMetrics(t0, runId))
         metricsCode = codeInt(resp)
         crumb("metrics.code=" & $metricsCode)
         if metricsCode != 200: failed = true
@@ -222,21 +229,29 @@ else:
         crumb("logs.error=" & excSummary(e))
 
       if not failed and tracesCode == 200 and metricsCode == 200 and logsCode == 200:
-        crumb("PASS")
+        finalLine = "PASS"
       else:
-        crumb("FAIL traces=" & $tracesCode &
-              " metrics=" & $metricsCode &
-              " logs=" & $logsCode &
-              " netctl.rc=" & $netRc &
-              " netctl.state=" & $netState)
+        finalLine = "FAIL traces=" & $tracesCode &
+                    " metrics=" & $metricsCode &
+                    " logs=" & $logsCode &
+                    " netctl.rc=" & $netRc &
+                    " netctl.state=" & $netState
     except CatchableError as e:
-      crumb("FAIL " & excSummary(e) &
-            " netctl.rc=" & $netRc &
-            " netctl.state=" & $netState)
+      finalLine = "FAIL " & excSummary(e) &
+                  " netctl.rc=" & $netRc &
+                  " netctl.state=" & $netState
     finally:
       if exporterReady:
-        exporter.close()
-        crumb("exporter.close PASS")
+        try:
+          exporter.close()
+          crumb("exporter.close PASS")
+        except CatchableError as e:
+          if finalLine.len == 0:
+            finalLine = "FAIL exporter.close " & excSummary(e)
+          else:
+            crumb("exporter.close ERROR " & excSummary(e))
+      if finalLine.len > 0:
+        crumb(finalLine)
 
     discard sceKernelExitProcess(0)
 
