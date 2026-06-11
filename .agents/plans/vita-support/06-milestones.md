@@ -12,7 +12,10 @@
 > Datadog `pup` verification on `us3.datadoghq.com` found APM spans for
 > `service:observy-vita-verify` at `2026-06-11T04:52:52.081Z`, a log with
 > message `observy Vita verification` and `device=playstation-vita`, and
-> metric `observy.vita.boot.gauge` value `1.0`. See
+> metric `observy.vita.boot.gauge` value `1.0`. Commands used:
+> `DD_SITE=us3.datadoghq.com $HOME/git/pup/target/release/pup traces search --query='service:observy-vita-verify' --from=2h --limit=20 --output=json`;
+> `DD_SITE=us3.datadoghq.com $HOME/git/pup/target/release/pup logs search --query='"vita-1781153572081310000" OR "observy Vita verification" OR @device:playstation-vita' --from=2h --limit=20 --output=json`;
+> `DD_SITE=us3.datadoghq.com $HOME/git/pup/target/release/pup metrics query --query='avg:observy.vita.boot.gauge{*}' --from=2h --output=json`. See
 > `.agents/plans/vita-support/SPIKE-NOTES.md` for raw M0 output and SHA-256.
 
 Sequenced milestones with acceptance criteria. Beads granularity: **one
