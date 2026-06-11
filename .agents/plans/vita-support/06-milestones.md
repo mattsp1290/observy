@@ -39,7 +39,7 @@ If M0 finds `sockets_vita.nim` bugs, the fixes are `~/git/http` work items
 - [x] Rung 3: wall-clock source decided (newlib `CLOCK_REALTIME` vs
       `sceRtcGetCurrentTick` vs none) with on-device date validation;
       UTC-vs-local recorded.
-- [x] Rung 4: ~100-cycle emit loop survives under arc.
+- [x] Rung 4: ~100-cycle encode loop survives under arc.
 - [x] `SPIKE-NOTES.md` written (durable: SCE error codes, chosen time
       source, `~/git/http` fixes if any, GO/NO-GO).
 

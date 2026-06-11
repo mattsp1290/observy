@@ -4,8 +4,10 @@
 
 The M0 spike ran on real Vita hardware and all required rungs passed. The Vita
 result file was read back from `ux0:data/observy_vita_spike.txt` after mounting
-the memory card at `/Volumes/Untitled`; SHA-256 of the copied result was
-`f16056ebf964bb0b022f92bd4a71d52a4e244beb94219d8d4e2c061547aab534`.
+the memory card at `/Volumes/Untitled`; it was copied to
+`/tmp/observy_vita_spike_result.txt`, and `shasum -a 256` reported
+`f16056ebf964bb0b022f92bd4a71d52a4e244beb94219d8d4e2c061547aab534` for both
+the mounted file and the copy.
 
 ## Build
 
@@ -42,13 +44,17 @@ the memory card at `/Volumes/Untitled`; SHA-256 of the copied result was
   `2026-06-11T04:02:38.582067012Z`.
 - `sceRtcGetCurrentTick`: `1781150558585766000` ns =
   `2026-06-11T04:02:38.585765838Z`, `sceRtcGetTickResolution() = 1000000`.
-- UTC vs local: readings match the UTC reference time for the run
-  (`2026-06-11T04:05:55Z` checked on the dev machine shortly after readback).
+- UTC vs local: readings produced the correct UTC date and wall-clock minute for
+  the run. The mounted card listed `ux0:data/observy_vita_spike.txt` with
+  modified time `Jun 11 00:02` local (`2026-06-11T04:02Z`), matching the
+  `CLOCK_REALTIME` and `sceRtcGetCurrentTick` readings at `04:02:38Z`. A later
+  dev-machine clock check at `2026-06-11T04:05:55Z` was readback time, not the
+  near-simultaneous run reference.
 - Chosen source for `time_vita.nim`: newlib `clock_gettime(CLOCK_REALTIME)`.
   `sceRtcGetCurrentTick` is validated as a fallback and uses the planned
   year-1-to-Unix epoch conversion.
 
-### Rung 4 — ARC sanity under emit loop
+### Rung 4 — ARC sanity under encode loop
 
 - Status: PASS
 - Evidence: `RUNG4 encode-loop PASS cycles=100 encoded_bytes_total=31694`.
@@ -58,6 +64,8 @@ the memory card at `/Volumes/Untitled`; SHA-256 of the copied result was
 
 - `~/git/http` fixes required: none from M0.
 - VitaSDK/toolchain issues: none from M0.
+- Net pool size adequacy: the `~/git/http` default Vita net pool was sufficient
+  for Rung 1 raw POSTs and the Rung 2 observy-encoded trace POST.
 
 ## Raw Result
 
